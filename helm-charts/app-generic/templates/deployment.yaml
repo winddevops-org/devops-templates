@@ -38,7 +38,9 @@ spec:
           ports:
             - containerPort: {{ .Values.service.targetPort }}
           env:
+            {{- if .Values.env }}
             {{- toYaml .Values.env | nindent 12 }}
+            {{- end }}
             {{- include "app-generic.dbEnvVars" . | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
