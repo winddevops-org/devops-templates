@@ -26,10 +26,10 @@ spec:
             - -c
             - |
               until nc -z {{ include "app-generic.dbServiceName" . }} {{ include "app-generic.dbPort" . | trim }}; do
-                echo "DB non prête, attente 3s..."
+                echo "DB non prete, attente 3s..."
                 sleep 3
               done
-              echo "✅ DB prête !"
+              echo "DB prete !"
       {{- end }}
       containers:
         - name: app
