@@ -1,16 +1,13 @@
 name: Mono Pipeline
-
 on:
   workflow_call:
     secrets:
       GITOPS_TOKEN:
         required: true
-
 jobs:
   pipeline:
     runs-on: self-hosted
     timeout-minutes: 60
-
     services:
       postgres:
         image: postgres:15-alpine
@@ -25,21 +22,24 @@ jobs:
           --health-interval=10s
           --health-timeout=5s
           --health-retries=5
-
     steps:
       # ── CLEAN WORKSPACE ────────────────────────────────────────
       - name: Clean workspace
         run: |
           sudo git clean -ffdx 2>/dev/null || \
           sudo find "${{ github.workspace }}" -mindepth 1 -delete 2>/dev/null || true
-
       - name: Checkout
         uses: actions/checkout@v4
-
+      # 🆕 ── CHECKOUT DEVOPS-TEMPLATES (scripts centralisés) ─────
+      - name: Checkout devops-templates
+        uses: actions/checkout@v4
+        with:
+          repository: winddevops-org/devops-templates
+          path: devops-templates
+          token: ${{ secrets.GITOPS_TOKEN }}
       # ── BUILDKIT ───────────────────────────────────────────────
       - name: Enable Docker BuildKit
         run: echo "DOCKER_BUILDKIT=1" >> "$GITHUB_ENV"
-
       # ── APP NAME ───────────────────────────────────────────────
       - name: Set APP_NAME
         run: |
@@ -47,7 +47,6 @@ jobs:
             | tr '[:upper:]' '[:lower:]' \
             | sed 's/[^a-z0-9-]/-/g')
           echo "APP_NAME=${APP_NAME}" >> "$GITHUB_ENV"
-
       # ── DETECT MODE ────────────────────────────────────────────
       - name: Detect deploy mode & frontend location
         run: |
@@ -59,7 +58,6 @@ jobs:
           BACK_CONTEXT="."
           MONO_FILE=""
           FRONT_AT_ROOT="false"
-
           if [ -f "frontend/Dockerfile" ]; then
             HAS_FRONT="true"
             FRONT_FILE="frontend/Dockerfile"
@@ -69,11 +67,9 @@ jobs:
             FRONT_FILE="Dockerfile.frontend"
             FRONT_CONTEXT="."
           fi
-
           if [ "${HAS_FRONT}" = "true" ] && [ -f "package.json" ] && [ -f "angular.json" ]; then
             FRONT_AT_ROOT="true"
           fi
-
           if [ -f "backend/Dockerfile" ]; then
             HAS_BACK="true"
             BACK_FILE="backend/Dockerfile"
@@ -83,7 +79,6 @@ jobs:
             BACK_FILE="Dockerfile.backend"
             BACK_CONTEXT="."
           fi
-
           if [ "${HAS_FRONT}" = "true" ] && [ "${HAS_BACK}" = "true" ]; then
             DEPLOY_MODE="dual"
           elif [ "${HAS_FRONT}" = "true" ]; then
@@ -97,7 +92,6 @@ jobs:
             echo "❌ Aucun Dockerfile trouvé."
             exit 1
           fi
-
           echo "DEPLOY_MODE=${DEPLOY_MODE}"     >> "$GITHUB_ENV"
           echo "HAS_FRONT=${HAS_FRONT}"         >> "$GITHUB_ENV"
           echo "HAS_BACK=${HAS_BACK}"           >> "$GITHUB_ENV"
@@ -108,19 +102,18 @@ jobs:
           echo "MONO_FILE=${MONO_FILE}"         >> "$GITHUB_ENV"
           echo "FRONT_AT_ROOT=${FRONT_AT_ROOT}" >> "$GITHUB_ENV"
           echo "✅ Deploy mode : ${DEPLOY_MODE}"
-
       # ── DETECT BACKEND TECH & DB ───────────────────────────────
       - name: Detect backend technology & Database type
         run: |
           DB_TYPE="none"
-          
+
           if [ -f "backend/pom.xml" ]; then
             echo "HAS_MAVEN=true" >> "$GITHUB_ENV"
             JAVA_VERSION=$(grep -oP '(?<=<java.version>)[^<]+' backend/pom.xml 2>/dev/null | head -1)
             [ -z "${JAVA_VERSION}" ] && JAVA_VERSION=$(grep -oP '(?<=<maven.compiler.source>)[^<]+' backend/pom.xml 2>/dev/null | head -1)
             [ -z "${JAVA_VERSION}" ] && JAVA_VERSION="17"
             echo "JAVA_VERSION=${JAVA_VERSION}" >> "$GITHUB_ENV"
-            
+
             if grep -q "postgresql" backend/pom.xml; then DB_TYPE="postgresql"
             elif grep -q "mysql-connector" backend/pom.xml; then DB_TYPE="mysql"
             elif grep -q "mongodb-driver" backend/pom.xml || grep -q "mongo-java-driver" backend/pom.xml; then DB_TYPE="mongodb"
@@ -129,7 +122,7 @@ jobs:
           else
             echo "HAS_MAVEN=false" >> "$GITHUB_ENV"
           fi
-          
+
           if [ -f "backend/requirements.txt" ]; then
             echo "HAS_PYTHON=true" >> "$GITHUB_ENV"
             if grep -q "psycopg2" backend/requirements.txt; then DB_TYPE="postgresql"
@@ -139,7 +132,7 @@ jobs:
           else
             echo "HAS_PYTHON=false" >> "$GITHUB_ENV"
           fi
-          
+
           if [ -f "backend/go.mod" ]; then
             echo "HAS_GO=true" >> "$GITHUB_ENV"
             if grep -q "lib/pq" backend/go.mod || grep -q "pgx" backend/go.mod; then DB_TYPE="postgresql"
@@ -149,17 +142,16 @@ jobs:
           else
             echo "HAS_GO=false" >> "$GITHUB_ENV"
           fi
-          
+
           if [ -f "backend/package.json" ]; then
             if grep -q '"pg"' backend/package.json; then DB_TYPE="postgresql"
             elif grep -q '"mysql2"' backend/package.json; then DB_TYPE="mysql"
             elif grep -q '"mongoose"' backend/package.json; then DB_TYPE="mongodb"
             fi
           fi
-          
+
           echo "DB_TYPE=${DB_TYPE}" >> "$GITHUB_ENV"
           echo "✅ Database detected: ${DB_TYPE}"
-
       # ── DOCKER LOGIN (avant le check) ──────────────────────────
       - name: Trust Nexus certificate
         run: |
@@ -167,16 +159,14 @@ jobs:
           sudo cp /home/ubuntu/nexus/certs/nexus.crt /etc/docker/certs.d/192.168.1.239:8085/ca.crt
           sudo cp /home/ubuntu/nexus/certs/nexus.crt /usr/local/share/ca-certificates/nexus.crt
           sudo update-ca-certificates
-
       - name: Docker login
         run: echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
-
       # ── SKIP INTELLIGENT : Vérifier si l'image existe déjà ─────
       - name: "🔍 Vérifier si l'image existe déjà dans Nexus"
         id: check_image
         run: |
           SKIP="false"
-          
+
           if [ "${{ env.DEPLOY_MODE }}" = "dual" ]; then
             IMG_F="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
             IMG_B="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
@@ -204,14 +194,13 @@ jobs:
               echo "LOCAL_IMAGE=${IMG}" >> "$GITHUB_ENV"
             fi
           fi
-          
+
           echo "SKIP_BUILD=${SKIP}" >> $GITHUB_ENV
           if [ "$SKIP" = "true" ]; then
             echo "✅ Image(s) déjà présente(s) pour ce commit. Skip Build & Push."
           else
             echo "🚀 Image non trouvée. Procédure de Build & Push lancée."
           fi
-
       # ── INSTALL FRONTEND ───────────────────────────────────────
       - name: Install frontend dependencies
         if: env.HAS_FRONT == 'true' && env.SKIP_BUILD != 'true'
@@ -225,7 +214,6 @@ jobs:
               192.168.1.239:8085/selfkhaoula/node:20-alpine \
               npm install --legacy-peer-deps --loglevel=error --no-fund
           fi
-
       # ── TESTS ──────────────────────────────────────────────────
       - name: "🧪 Test frontend (Angular)"
         if: env.HAS_FRONT == 'true' && env.SKIP_BUILD != 'true'
@@ -239,7 +227,6 @@ jobs:
               192.168.1.239:8085/selfkhaoula/node:20-browsers \
               npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox 2>&1 | tee frontend-test.log
           fi
-
       - name: "🧪 Test backend (Java/Maven)"
         if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
         run: |
@@ -256,21 +243,18 @@ jobs:
             find "$PWD/backend/target/surefire-reports" -name "*.txt" -exec echo "--- {} ---" \; -exec cat {} \; 2>/dev/null || true
             exit 1
           }
-
       - name: "🧪 Test backend (Python)"
         if: env.HAS_PYTHON == 'true' && env.SKIP_BUILD != 'true'
         run: |
           docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/backend:/app" -w /app \
             192.168.1.239:8085/selfkhaoula/python:3.11-slim \
             sh -c "pip install -r requirements.txt -q && pytest --tb=short"
-
       - name: "🧪 Test backend (Go)"
         if: env.HAS_GO == 'true' && env.SKIP_BUILD != 'true'
         run: |
           docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/backend:/app" -w /app \
             192.168.1.239:8085/selfkhaoula/golang:1.22-alpine \
             go test ./... -v
-
       # ── LINT ───────────────────────────────────────────────────
       - name: "🔍 Lint frontend (ESLint)"
         if: env.HAS_FRONT == 'true' && env.SKIP_BUILD != 'true'
@@ -279,7 +263,6 @@ jobs:
           docker run --rm --user "$(id -u):$(id -g)" -v "${MOUNT}:/app" -w /app \
             192.168.1.239:8085/selfkhaoula/node:20-alpine \
             sh -c "if node -e \"const p=require('./package.json'); process.exit(p.scripts&&p.scripts.lint?0:1);\" 2>/dev/null; then npm run lint; else echo '⚠️ Pas de script lint, ignoré.'; fi"
-
       - name: "🔍 Lint backend (Checkstyle)"
         if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
         run: |
@@ -290,7 +273,6 @@ jobs:
           else
             echo "⚠️ Checkstyle non configuré, ignoré."
           fi
-
       - name: "🔍 Lint Dockerfiles (hadolint)"
         if: env.SKIP_BUILD != 'true'
         run: |
@@ -319,7 +301,6 @@ jobs:
             back-only)  lint_dockerfile "${{ env.BACK_FILE }}"  ;;
             mono)       lint_dockerfile "${{ env.MONO_FILE }}"  ;;
           esac
-
       # ── BUILD ──────────────────────────────────────────────────
       - name: "🐳 Build (mono)"
         if: env.DEPLOY_MODE == 'mono' && env.SKIP_BUILD != 'true'
@@ -327,54 +308,45 @@ jobs:
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}:${{ github.sha }}"
           docker build -f "${{ env.MONO_FILE }}" -t "${IMAGE}" .
           echo "LOCAL_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
-
       - name: "🐳 Build (front-only)"
         if: env.DEPLOY_MODE == 'front-only' && env.SKIP_BUILD != 'true'
         run: |
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
           docker build -f "${{ env.FRONT_FILE }}" -t "${IMAGE}" "${{ env.FRONT_CONTEXT }}"
           echo "LOCAL_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
-
       - name: "🐳 Build (back-only)"
         if: env.DEPLOY_MODE == 'back-only' && env.SKIP_BUILD != 'true'
         run: |
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
           docker build -f "${{ env.BACK_FILE }}" -t "${IMAGE}" "${{ env.BACK_CONTEXT }}"
           echo "LOCAL_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
-
       - name: "🐳 Build frontend (dual)"
         if: env.DEPLOY_MODE == 'dual' && env.SKIP_BUILD != 'true'
         run: |
           FRONT_IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
           docker build -f "${{ env.FRONT_FILE }}" -t "${FRONT_IMAGE}" "${{ env.FRONT_CONTEXT }}"
           echo "FRONT_LOCAL_IMAGE=${FRONT_IMAGE}" >> "$GITHUB_ENV"
-
       - name: "🐳 Build backend (dual)"
         if: env.DEPLOY_MODE == 'dual' && env.SKIP_BUILD != 'true'
         run: |
           BACK_IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
           docker build -f "${{ env.BACK_FILE }}" -t "${BACK_IMAGE}" "${{ env.BACK_CONTEXT }}"
           echo "BACK_LOCAL_IMAGE=${BACK_IMAGE}" >> "$GITHUB_ENV"
-
       # ── TRIVY + SMOKE ──────────────────────────────────────────
       - name: "🔒 Trivy scan (mono)"
         if: env.DEPLOY_MODE == 'mono' && env.SKIP_BUILD != 'true'
         run: trivy image --severity HIGH,CRITICAL --exit-code 0 --ignore-unfixed "${{ env.LOCAL_IMAGE }}"
-
       - name: "🔒 Trivy scan (front-only)"
         if: env.DEPLOY_MODE == 'front-only' && env.SKIP_BUILD != 'true'
         run: trivy image --severity HIGH,CRITICAL --exit-code 0 --ignore-unfixed "${{ env.LOCAL_IMAGE }}"
-
       - name: "🔒 Trivy scan (back-only)"
         if: env.DEPLOY_MODE == 'back-only' && env.SKIP_BUILD != 'true'
         run: trivy image --severity HIGH,CRITICAL --exit-code 0 --ignore-unfixed "${{ env.LOCAL_IMAGE }}"
-
       - name: "🔒 Trivy scan (dual)"
         if: env.DEPLOY_MODE == 'dual' && env.SKIP_BUILD != 'true'
         run: |
           trivy image --severity HIGH,CRITICAL --exit-code 0 --ignore-unfixed "${{ env.FRONT_LOCAL_IMAGE }}"
           trivy image --severity HIGH,CRITICAL --exit-code 0 --ignore-unfixed "${{ env.BACK_LOCAL_IMAGE }}"
-
       - name: "🔥 Smoke tests (mono/front/back)"
         if: env.DEPLOY_MODE != 'dual' && env.SKIP_BUILD != 'true'
         run: |
@@ -390,7 +362,6 @@ jobs:
           fi
           docker stop "${CONTAINER_ID}" 2>/dev/null || true
           echo "✅ OK"
-
       - name: "🔥 Smoke tests (dual)"
         if: env.DEPLOY_MODE == 'dual' && env.SKIP_BUILD != 'true'
         run: |
@@ -408,28 +379,23 @@ jobs:
             docker stop "${CONTAINER_ID}" 2>/dev/null || true
             echo "✅ OK"
           done
-
       # ── PUSH ───────────────────────────────────────────────────
       - name: "🐳 Push (mono)"
         if: env.DEPLOY_MODE == 'mono' && env.SKIP_BUILD != 'true'
         run: docker push "${{ env.LOCAL_IMAGE }}"
-
       - name: "🐳 Push (front-only)"
         if: env.DEPLOY_MODE == 'front-only' && env.SKIP_BUILD != 'true'
         run: docker push "${{ env.LOCAL_IMAGE }}"
-
       - name: "🐳 Push (back-only)"
         if: env.DEPLOY_MODE == 'back-only' && env.SKIP_BUILD != 'true'
         run: docker push "${{ env.LOCAL_IMAGE }}"
-
       - name: "🐳 Push (dual)"
         if: env.DEPLOY_MODE == 'dual' && env.SKIP_BUILD != 'true'
         run: |
           docker push "${{ env.FRONT_LOCAL_IMAGE }}"
           docker push "${{ env.BACK_LOCAL_IMAGE }}"
-
       # ── GITOPS ─────────────────────────────────────────────────
-      # 🆕 APPEL AU SCRIPT EXTERNE (plus de heredoc dans le YAML)
+      # 🆕 Script centralisé dans devops-templates (checkout dédié)
       - name: "🚀 Update GitOps"
         env:
           GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
@@ -438,5 +404,5 @@ jobs:
           DB_TYPE: ${{ env.DB_TYPE }}
           DEPLOY_MODE: ${{ env.DEPLOY_MODE }}
         run: |
-          chmod +x .github/workflows/update-gitops.sh
-          .github/workflows/update-gitops.sh
+          chmod +x devops-templates/.github/workflows/update-gitops.sh
+          devops-templates/.github/workflows/update-gitops.sh
