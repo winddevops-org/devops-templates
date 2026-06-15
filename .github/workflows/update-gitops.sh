@@ -45,19 +45,19 @@ write_argocd() {
 write_database() {
   local COMP="$1"
   local DBPATH="environments/staging/${COMP}/database.yaml"
-  
+
   if [ "${DB_TYPE}" = "none" ] || [ "${DB_TYPE}" = "h2" ]; then
     echo "ℹ️ Pas de base de données externe nécessaire pour ${COMP}"
     return 0
   fi
-  
+
   if [ -f "${DBPATH}" ]; then
     echo "⚠️ Base de données déjà existante, ignorée."
     return 0
   fi
-  
+
   mkdir -p "$(dirname "${DBPATH}")"
-  
+
   if [ "${DB_TYPE}" = "postgresql" ]; then
     cat > "${DBPATH}" <<'DBEOF'
 ---
@@ -131,7 +131,7 @@ DBEOF
     sed -i "s/COMP_PLACEHOLDER/${COMP}/g" "${DBPATH}"
     sed -i "s/DBNAME_PLACEHOLDER/${COMP//-/_}_db/g" "${DBPATH}"
     echo "✅ PostgreSQL généré pour ${COMP}"
-    
+
   elif [ "${DB_TYPE}" = "mysql" ]; then
     cat > "${DBPATH}" <<'DBEOF'
 ---
@@ -205,7 +205,7 @@ DBEOF
     sed -i "s/COMP_PLACEHOLDER/${COMP}/g" "${DBPATH}"
     sed -i "s/DBNAME_PLACEHOLDER/${COMP//-/_}_db/g" "${DBPATH}"
     echo "✅ MySQL généré pour ${COMP}"
-    
+
   elif [ "${DB_TYPE}" = "mongodb" ]; then
     cat > "${DBPATH}" <<'DBEOF'
 ---
@@ -284,16 +284,16 @@ inject_db_env() {
   local COMP="$1"
   local VPATH="environments/staging/${COMP}/values.yaml"
   local DB_NAME="${COMP//-/_}_db"
-  
+
   if [ "${DB_TYPE}" = "none" ] || [ "${DB_TYPE}" = "h2" ]; then
     return 0
   fi
-  
+
   if grep -q "DATASOURCE_URL\|DATABASE_URL\|MONGO_URI" "${VPATH}" 2>/dev/null; then
     echo "⚠️ Variables DB déjà présentes, ignorées."
     return 0
   fi
-  
+
   if [ "${DB_TYPE}" = "postgresql" ]; then
     cat >> "${VPATH}" <<'ENVEOF'
 
@@ -310,7 +310,7 @@ ENVEOF
     sed -i "s/COMP_PLACEHOLDER/${COMP}/g" "${VPATH}"
     sed -i "s/DBNAME_PLACEHOLDER/${DB_NAME}/g" "${VPATH}"
     echo "✅ Variables PostgreSQL injectées pour ${COMP}"
-    
+
   elif [ "${DB_TYPE}" = "mysql" ]; then
     cat >> "${VPATH}" <<'ENVEOF'
 
@@ -327,7 +327,7 @@ ENVEOF
     sed -i "s/COMP_PLACEHOLDER/${COMP}/g" "${VPATH}"
     sed -i "s/DBNAME_PLACEHOLDER/${DB_NAME}/g" "${VPATH}"
     echo "✅ Variables MySQL injectées pour ${COMP}"
-    
+
   elif [ "${DB_TYPE}" = "mongodb" ]; then
     cat >> "${VPATH}" <<'ENVEOF'
 
@@ -373,7 +373,10 @@ case "${DEPLOY_MODE}" in
 esac
 
 git add .
-git diff --cached --quiet && echo "Rien à commiter." && exit 0
+if git diff --cached --quiet; then
+  echo "Rien à commiter."
+  exit 0
+fi
 git commit -m "${COMMIT_MSG}"
 git pull --rebase origin main
 git push origin main
