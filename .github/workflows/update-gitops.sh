@@ -56,6 +56,13 @@ database:
   type: ""
   name: ""
   storage: 1Gi
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi
 VALEOF
     echo "✅ values.yaml créé pour ${COMP}"
   else
@@ -87,6 +94,13 @@ database:
   type: "{db_type}"
   name: "{db_name}"
   storage: 1Gi
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi
 """
 with open(path, 'w') as f:
     f.write(content.rstrip() + new_block)
