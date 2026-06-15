@@ -1,0 +1,153 @@
+{{- if .Values.database.enabled }}
+{{- $name    := .Values.name | default .Release.Name }}
+{{- $dbName  := include "app-generic.dbStatefulSetName" . }}
+{{- $svcName := include "app-generic.dbServiceName" . }}
+{{- $secret  := include "app-generic.dbSecretName" . }}
+{{- $port    := include "app-generic.dbPort" . | trim }}
+{{- $image   := include "app-generic.dbImage" . }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secret }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ $name }}
+    component: database
+type: Opaque
+stringData:
+  username: "admin"
+  password: "changeme123"
+  {{- if eq .Values.database.type "mysql" }}
+  root-password: "rootchangeme123"
+  {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $svcName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ $name }}
+    component: database
+spec:
+  clusterIP: None
+  selector:
+    app: {{ $dbName }}
+  ports:
+    - name: db
+      port: {{ $port }}
+      targetPort: {{ $port }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $dbName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ $name }}
+    component: database
+spec:
+  serviceName: {{ $svcName }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ $dbName }}
+  template:
+    metadata:
+      labels:
+        app: {{ $dbName }}
+    spec:
+      containers:
+        - name: db
+          image: {{ $image }}
+          ports:
+            - containerPort: {{ $port }}
+          {{- if eq .Values.database.type "postgresql" }}
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.database.name | quote }}
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: password
+            - name: PGDATA
+              value: "/var/lib/postgresql/data/pgdata"
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "admin"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 6
+          {{- else if eq .Values.database.type "mysql" }}
+          env:
+            - name: MYSQL_DATABASE
+              value: {{ .Values.database.name | quote }}
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: username
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: password
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: root-password
+          readinessProbe:
+            exec:
+              command: ["mysqladmin", "ping", "-h", "localhost"]
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            failureThreshold: 6
+          {{- else if eq .Values.database.type "mongodb" }}
+          env:
+            - name: MONGO_INITDB_DATABASE
+              value: {{ .Values.database.name | quote }}
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: username
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: password
+          readinessProbe:
+            exec:
+              command: ["mongosh", "--eval", "db.adminCommand('ping')"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 6
+          {{- end }}
+          volumeMounts:
+            - name: db-storage
+              {{- if eq .Values.database.type "postgresql" }}
+              mountPath: /var/lib/postgresql/data
+              {{- else if eq .Values.database.type "mysql" }}
+              mountPath: /var/lib/mysql
+              {{- else if eq .Values.database.type "mongodb" }}
+              mountPath: /data/db
+              {{- end }}
+          resources:
+            {{- toYaml .Values.database.resources | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: db-storage
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.database.storage }}
+{{- end }}

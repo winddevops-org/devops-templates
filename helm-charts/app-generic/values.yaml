@@ -30,3 +30,18 @@ resources:
     memory: 256Mi
 
 env: []                   # Variables d'environnement
+
+# ── Base de données ────────────────────────────────────────────
+database:
+  enabled: false
+  type: ""
+  name: ""
+  storage: 1Gi
+  secretName: ""
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"

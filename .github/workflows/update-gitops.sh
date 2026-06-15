@@ -1,7 +1,6 @@
 #!/bin/bash
 set -e
 
-# Vérification du token
 if [ -z "${GITOPS_PAT}" ]; then
   echo "❌ ERREUR CRITIQUE: Le secret GITOPS_TOKEN est vide ou non transmis !"
   exit 1
@@ -25,12 +24,74 @@ write_values() {
   local VPATH="environments/staging/${COMP}/values.yaml"
   mkdir -p "$(dirname "${VPATH}")"
   if [ ! -f "${VPATH}" ]; then
-    printf 'name: %s\nreplicaCount: 1\nimage:\n  repository: "%s"\n  tag: "%s"\n  pullPolicy: IfNotPresent\nimagePullSecrets:\n  - name: nexus-registry-secret\nservice:\n  type: ClusterIP\n  port: 80\n  targetPort: 80\ningress:\n  enabled: true\n  className: nginx\n  host: %s.staging.local\n  path: /\n  pathType: Prefix\nresources:\n  limits:\n    cpu: 500m\n    memory: 512Mi\n  requests:\n    cpu: 250m\n    memory: 256Mi\n' \
-      "${COMP}" "${REPO}" "${TAG}" "${COMP}" > "${VPATH}"
+    cat > "${VPATH}" <<VALEOF
+name: ${COMP}
+replicaCount: 1
+image:
+  repository: "${REPO}"
+  tag: "${TAG}"
+  pullPolicy: IfNotPresent
+imagePullSecrets:
+  - name: nexus-registry-secret
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 80
+ingress:
+  enabled: true
+  className: nginx
+  host: ${COMP}.staging.local
+  path: /
+  pathType: Prefix
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+env: []
+database:
+  enabled: false
+  type: ""
+  name: ""
+  storage: 1Gi
+VALEOF
+    echo "✅ values.yaml créé pour ${COMP}"
   else
     sed -i "s|repository:.*|repository: \"${REPO}\"|" "${VPATH}"
     sed -i "s|tag:.*|tag: \"${TAG}\"|"                "${VPATH}"
+    echo "✅ values.yaml mis à jour pour ${COMP} → ${TAG}"
   fi
+}
+
+write_db_values() {
+  local COMP="$1"
+  local VPATH="environments/staging/${COMP}/values.yaml"
+  local DB_NAME="${COMP//-/_}_db"
+
+  if [ "${DB_TYPE}" = "none" ] || [ "${DB_TYPE}" = "h2" ] || [ -z "${DB_TYPE}" ]; then
+    echo "ℹ️ Pas de DB externe pour ${COMP}"
+    return 0
+  fi
+
+  python3 - "${VPATH}" "${DB_TYPE}" "${DB_NAME}" <<'PYEOF'
+import sys, re
+path, db_type, db_name = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path) as f:
+    content = f.read()
+content = re.sub(r'\ndatabase:.*?(?=\n\S|\Z)', '', content, flags=re.DOTALL)
+new_block = f"""
+database:
+  enabled: true
+  type: "{db_type}"
+  name: "{db_name}"
+  storage: 1Gi
+"""
+with open(path, 'w') as f:
+    f.write(content.rstrip() + new_block)
+print(f"✅ database.* injecté : type={db_type}, name={db_name}")
+PYEOF
 }
 
 write_argocd() {
@@ -38,316 +99,43 @@ write_argocd() {
   local APATH="argocd-applications/${COMP}.yaml"
   mkdir -p argocd-applications
   [ -f "${APATH}" ] && return 0
-  printf 'apiVersion: argoproj.io/v1alpha1\nkind: Application\nmetadata:\n  name: %s\n  namespace: argocd\nspec:\n  project: stagiaires\n  sources:\n    - repoURL: https://github.com/winddevops-org/devops-templates\n      targetRevision: main\n      path: helm-charts/app-generic\n      helm:\n        valueFiles:\n          - $values/environments/staging/%s/values.yaml\n    - repoURL: https://github.com/winddevops-org/gitops-environments\n      targetRevision: main\n      ref: values\n  destination:\n    server: https://kubernetes.default.svc\n    namespace: staging-%s\n  syncPolicy:\n    automated:\n      prune: true\n      selfHeal: true\n    syncOptions:\n      - CreateNamespace=true\n' \
-      "${COMP}" "${COMP}" "${COMP}" > "${APATH}"
-}
-
-write_database() {
-  local COMP="$1"
-  local DBPATH="environments/staging/${COMP}/database.yaml"
-
-  if [ "${DB_TYPE}" = "none" ] || [ "${DB_TYPE}" = "h2" ]; then
-    echo "ℹ️ Pas de base de données externe nécessaire pour ${COMP}"
-    return 0
-  fi
-
-  if [ -f "${DBPATH}" ]; then
-    echo "⚠️ Base de données déjà existante, ignorée."
-    return 0
-  fi
-
-  mkdir -p "$(dirname "${DBPATH}")"
-
-  if [ "${DB_TYPE}" = "postgresql" ]; then
-    cat > "${DBPATH}" <<'DBEOF'
----
-apiVersion: v1
-kind: Service
+  cat > "${APATH}" <<ARGOEOF
+apiVersion: argoproj.io/v1alpha1
+kind: Application
 metadata:
-  name: postgres-service-COMP_PLACEHOLDER
-  namespace: staging-COMP_PLACEHOLDER
+  name: ${COMP}
+  namespace: argocd
 spec:
-  selector:
-    app: postgres-db-COMP_PLACEHOLDER
-  ports:
-    - port: 5432
-      targetPort: 5432
-  clusterIP: None
----
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: postgres-db-COMP_PLACEHOLDER
-  namespace: staging-COMP_PLACEHOLDER
-spec:
-  serviceName: "postgres-service-COMP_PLACEHOLDER"
-  replicas: 1
-  selector:
-    matchLabels:
-      app: postgres-db-COMP_PLACEHOLDER
-  template:
-    metadata:
-      labels:
-        app: postgres-db-COMP_PLACEHOLDER
-    spec:
-      containers:
-        - name: postgres
-          image: postgres:15-alpine
-          ports:
-            - containerPort: 5432
-          env:
-            - name: POSTGRES_DB
-              value: "DBNAME_PLACEHOLDER"
-            - name: POSTGRES_USER
-              value: "admin"
-            - name: POSTGRES_PASSWORD
-              value: "changeme123"
-            - name: PGDATA
-              value: "/var/lib/postgresql/data/pgdata"
-          volumeMounts:
-            - name: postgres-storage
-              mountPath: /var/lib/postgresql/data
-          resources:
-            requests:
-              memory: "256Mi"
-              cpu: "250m"
-            limits:
-              memory: "512Mi"
-              cpu: "500m"
-          readinessProbe:
-            exec:
-              command: ["pg_isready", "-U", "admin"]
-            initialDelaySeconds: 10
-            periodSeconds: 5
-  volumeClaimTemplates:
-    - metadata:
-        name: postgres-storage
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 1Gi
-DBEOF
-    sed -i "s/COMP_PLACEHOLDER/${COMP}/g" "${DBPATH}"
-    sed -i "s/DBNAME_PLACEHOLDER/${COMP//-/_}_db/g" "${DBPATH}"
-    echo "✅ PostgreSQL généré pour ${COMP}"
-
-  elif [ "${DB_TYPE}" = "mysql" ]; then
-    cat > "${DBPATH}" <<'DBEOF'
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mysql-service-COMP_PLACEHOLDER
-  namespace: staging-COMP_PLACEHOLDER
-spec:
-  selector:
-    app: mysql-db-COMP_PLACEHOLDER
-  ports:
-    - port: 3306
-      targetPort: 3306
-  clusterIP: None
----
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: mysql-db-COMP_PLACEHOLDER
-  namespace: staging-COMP_PLACEHOLDER
-spec:
-  serviceName: "mysql-service-COMP_PLACEHOLDER"
-  replicas: 1
-  selector:
-    matchLabels:
-      app: mysql-db-COMP_PLACEHOLDER
-  template:
-    metadata:
-      labels:
-        app: mysql-db-COMP_PLACEHOLDER
-    spec:
-      containers:
-        - name: mysql
-          image: mysql:8.0
-          ports:
-            - containerPort: 3306
-          env:
-            - name: MYSQL_DATABASE
-              value: "DBNAME_PLACEHOLDER"
-            - name: MYSQL_USER
-              value: "admin"
-            - name: MYSQL_PASSWORD
-              value: "changeme123"
-            - name: MYSQL_ROOT_PASSWORD
-              value: "rootpassword123"
-          volumeMounts:
-            - name: mysql-storage
-              mountPath: /var/lib/mysql
-          resources:
-            requests:
-              memory: "256Mi"
-              cpu: "250m"
-            limits:
-              memory: "512Mi"
-              cpu: "500m"
-          readinessProbe:
-            exec:
-              command: ["mysqladmin", "ping", "-h", "localhost"]
-            initialDelaySeconds: 15
-            periodSeconds: 5
-  volumeClaimTemplates:
-    - metadata:
-        name: mysql-storage
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 1Gi
-DBEOF
-    sed -i "s/COMP_PLACEHOLDER/${COMP}/g" "${DBPATH}"
-    sed -i "s/DBNAME_PLACEHOLDER/${COMP//-/_}_db/g" "${DBPATH}"
-    echo "✅ MySQL généré pour ${COMP}"
-
-  elif [ "${DB_TYPE}" = "mongodb" ]; then
-    cat > "${DBPATH}" <<'DBEOF'
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mongodb-service-COMP_PLACEHOLDER
-  namespace: staging-COMP_PLACEHOLDER
-spec:
-  selector:
-    app: mongodb-COMP_PLACEHOLDER
-  ports:
-    - port: 27017
-      targetPort: 27017
-  clusterIP: None
----
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: mongodb-COMP_PLACEHOLDER
-  namespace: staging-COMP_PLACEHOLDER
-spec:
-  serviceName: "mongodb-service-COMP_PLACEHOLDER"
-  replicas: 1
-  selector:
-    matchLabels:
-      app: mongodb-COMP_PLACEHOLDER
-  template:
-    metadata:
-      labels:
-        app: mongodb-COMP_PLACEHOLDER
-    spec:
-      containers:
-        - name: mongodb
-          image: mongo:6.0
-          ports:
-            - containerPort: 27017
-          env:
-            - name: MONGO_INITDB_DATABASE
-              value: "DBNAME_PLACEHOLDER"
-            - name: MONGO_INITDB_ROOT_USERNAME
-              value: "admin"
-            - name: MONGO_INITDB_ROOT_PASSWORD
-              value: "changeme123"
-          volumeMounts:
-            - name: mongodb-storage
-              mountPath: /data/db
-          resources:
-            requests:
-              memory: "256Mi"
-              cpu: "250m"
-            limits:
-              memory: "512Mi"
-              cpu: "500m"
-          readinessProbe:
-            exec:
-              command: ["mongosh", "--eval", "db.adminCommand('ping')"]
-            initialDelaySeconds: 10
-            periodSeconds: 5
-  volumeClaimTemplates:
-    - metadata:
-        name: mongodb-storage
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 1Gi
-DBEOF
-    sed -i "s/COMP_PLACEHOLDER/${COMP}/g" "${DBPATH}"
-    sed -i "s/DBNAME_PLACEHOLDER/${COMP//-/_}_db/g" "${DBPATH}"
-    echo "✅ MongoDB généré pour ${COMP}"
-  fi
-}
-
-inject_db_env() {
-  local COMP="$1"
-  local VPATH="environments/staging/${COMP}/values.yaml"
-  local DB_NAME="${COMP//-/_}_db"
-
-  if [ "${DB_TYPE}" = "none" ] || [ "${DB_TYPE}" = "h2" ]; then
-    return 0
-  fi
-
-  if grep -q "DATASOURCE_URL\|DATABASE_URL\|MONGO_URI" "${VPATH}" 2>/dev/null; then
-    echo "⚠️ Variables DB déjà présentes, ignorées."
-    return 0
-  fi
-
-  if [ "${DB_TYPE}" = "postgresql" ]; then
-    cat >> "${VPATH}" <<'ENVEOF'
-
-env:
-  - name: SPRING_DATASOURCE_URL
-    value: "jdbc:postgresql://postgres-service-COMP_PLACEHOLDER:5432/DBNAME_PLACEHOLDER"
-  - name: SPRING_DATASOURCE_USERNAME
-    value: "admin"
-  - name: SPRING_DATASOURCE_PASSWORD
-    value: "changeme123"
-  - name: SPRING_JPA_HIBERNATE_DDL_AUTO
-    value: "update"
-ENVEOF
-    sed -i "s/COMP_PLACEHOLDER/${COMP}/g" "${VPATH}"
-    sed -i "s/DBNAME_PLACEHOLDER/${DB_NAME}/g" "${VPATH}"
-    echo "✅ Variables PostgreSQL injectées pour ${COMP}"
-
-  elif [ "${DB_TYPE}" = "mysql" ]; then
-    cat >> "${VPATH}" <<'ENVEOF'
-
-env:
-  - name: SPRING_DATASOURCE_URL
-    value: "jdbc:mysql://mysql-service-COMP_PLACEHOLDER:3306/DBNAME_PLACEHOLDER?useSSL=false&allowPublicKeyRetrieval=true"
-  - name: SPRING_DATASOURCE_USERNAME
-    value: "admin"
-  - name: SPRING_DATASOURCE_PASSWORD
-    value: "changeme123"
-  - name: SPRING_JPA_HIBERNATE_DDL_AUTO
-    value: "update"
-ENVEOF
-    sed -i "s/COMP_PLACEHOLDER/${COMP}/g" "${VPATH}"
-    sed -i "s/DBNAME_PLACEHOLDER/${DB_NAME}/g" "${VPATH}"
-    echo "✅ Variables MySQL injectées pour ${COMP}"
-
-  elif [ "${DB_TYPE}" = "mongodb" ]; then
-    cat >> "${VPATH}" <<'ENVEOF'
-
-env:
-  - name: SPRING_DATA_MONGODB_URI
-    value: "mongodb://admin:changeme123@mongodb-service-COMP_PLACEHOLDER:27017/DBNAME_PLACEHOLDER?authSource=admin"
-ENVEOF
-    sed -i "s/COMP_PLACEHOLDER/${COMP}/g" "${VPATH}"
-    sed -i "s/DBNAME_PLACEHOLDER/${DB_NAME}/g" "${VPATH}"
-    echo "✅ Variables MongoDB injectées pour ${COMP}"
-  fi
+  project: stagiaires
+  sources:
+    - repoURL: https://github.com/winddevops-org/devops-templates
+      targetRevision: main
+      path: helm-charts/app-generic
+      helm:
+        valueFiles:
+          - \$values/environments/staging/${COMP}/values.yaml
+    - repoURL: https://github.com/winddevops-org/gitops-environments
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: staging-${COMP}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+ARGOEOF
+  echo "✅ ArgoCD Application créée pour ${COMP}"
 }
 
 case "${DEPLOY_MODE}" in
   mono)
     write_values "${APP_NAME}"       "${REGISTRY}/${APP_NAME}"       "${SHA}"
     write_argocd "${APP_NAME}"
-    write_database "${APP_NAME}"
-    inject_db_env "${APP_NAME}"
-    COMMIT_MSG="[${APP_NAME}] deploy -> ${SHA}"
+    write_db_values "${APP_NAME}"
+    COMMIT_MSG="[${APP_NAME}] deploy -> ${SHA} (db: ${DB_TYPE})"
     ;;
   front-only)
     write_values "${APP_NAME}-front" "${REGISTRY}/${APP_NAME}-front" "${SHA}"
@@ -357,18 +145,20 @@ case "${DEPLOY_MODE}" in
   back-only)
     write_values "${APP_NAME}-back"  "${REGISTRY}/${APP_NAME}-back"  "${SHA}"
     write_argocd "${APP_NAME}-back"
-    write_database "${APP_NAME}-back"
-    inject_db_env "${APP_NAME}-back"
-    COMMIT_MSG="[${APP_NAME}] deploy back -> ${SHA}"
+    write_db_values "${APP_NAME}-back"
+    COMMIT_MSG="[${APP_NAME}] deploy back -> ${SHA} (db: ${DB_TYPE})"
     ;;
   dual)
     write_values "${APP_NAME}-front" "${REGISTRY}/${APP_NAME}-front" "${SHA}"
     write_values "${APP_NAME}-back"  "${REGISTRY}/${APP_NAME}-back"  "${SHA}"
     write_argocd "${APP_NAME}-front"
     write_argocd "${APP_NAME}-back"
-    write_database "${APP_NAME}-back"
-    inject_db_env "${APP_NAME}-back"
-    COMMIT_MSG="[${APP_NAME}] deploy front+back -> ${SHA}"
+    write_db_values "${APP_NAME}-back"
+    COMMIT_MSG="[${APP_NAME}] deploy front+back -> ${SHA} (db: ${DB_TYPE})"
+    ;;
+  *)
+    echo "❌ DEPLOY_MODE inconnu : ${DEPLOY_MODE}"
+    exit 1
     ;;
 esac
 
