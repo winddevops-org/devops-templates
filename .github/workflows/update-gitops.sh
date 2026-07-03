@@ -63,8 +63,14 @@ database:
     requests:
       cpu: 250m
       memory: 256Mi
+  ha:
+    enabled: true
+    replicas: 2
+    proxy:
+      enabled: true
+      replicas: 2
 VALEOF
-    echo "✅ values.yaml créé pour ${COMP}"
+    echo "✅ values.yaml créé pour ${COMP} (avec HA)"
   else
     sed -i "s|repository:.*|repository: \"${REPO}\"|" "${VPATH}"
     sed -i "s|tag:.*|tag: \"${TAG}\"|"                "${VPATH}"
@@ -87,7 +93,11 @@ import sys, re
 path, db_type, db_name = sys.argv[1], sys.argv[2], sys.argv[3]
 with open(path) as f:
     content = f.read()
+
+# Supprimer l'ancien bloc database s'il existe
 content = re.sub(r'\ndatabase:.*?(?=\n\S|\Z)', '', content, flags=re.DOTALL)
+
+# Ajouter le nouveau bloc database avec HA
 new_block = f"""
 database:
   enabled: true
@@ -101,10 +111,17 @@ database:
     requests:
       cpu: 250m
       memory: 256Mi
+  ha:
+    enabled: true
+    replicas: 2
+    proxy:
+      enabled: true
+      replicas: 2
 """
+
 with open(path, 'w') as f:
     f.write(content.rstrip() + new_block)
-print(f"✅ database.* injecté : type={db_type}, name={db_name}")
+print(f"✅ database.* injecté : type={db_type}, name={db_name}, HA enabled")
 PYEOF
 }
 
@@ -149,7 +166,7 @@ case "${DEPLOY_MODE}" in
     write_values "${APP_NAME}"       "${REGISTRY}/${APP_NAME}"       "${SHA}"
     write_argocd "${APP_NAME}"
     write_db_values "${APP_NAME}"
-    COMMIT_MSG="[${APP_NAME}] deploy -> ${SHA} (db: ${DB_TYPE})"
+    COMMIT_MSG="[${APP_NAME}] deploy -> ${SHA} (db: ${DB_TYPE}, HA: enabled)"
     ;;
   front-only)
     write_values "${APP_NAME}-front" "${REGISTRY}/${APP_NAME}-front" "${SHA}"
@@ -160,7 +177,7 @@ case "${DEPLOY_MODE}" in
     write_values "${APP_NAME}-back"  "${REGISTRY}/${APP_NAME}-back"  "${SHA}"
     write_argocd "${APP_NAME}-back"
     write_db_values "${APP_NAME}-back"
-    COMMIT_MSG="[${APP_NAME}] deploy back -> ${SHA} (db: ${DB_TYPE})"
+    COMMIT_MSG="[${APP_NAME}] deploy back -> ${SHA} (db: ${DB_TYPE}, HA: enabled)"
     ;;
   dual)
     write_values "${APP_NAME}-front" "${REGISTRY}/${APP_NAME}-front" "${SHA}"
@@ -168,7 +185,7 @@ case "${DEPLOY_MODE}" in
     write_argocd "${APP_NAME}-front"
     write_argocd "${APP_NAME}-back"
     write_db_values "${APP_NAME}-back"
-    COMMIT_MSG="[${APP_NAME}] deploy front+back -> ${SHA} (db: ${DB_TYPE})"
+    COMMIT_MSG="[${APP_NAME}] deploy front+back -> ${SHA} (db: ${DB_TYPE}, HA: enabled)"
     ;;
   *)
     echo "❌ DEPLOY_MODE inconnu : ${DEPLOY_MODE}"
