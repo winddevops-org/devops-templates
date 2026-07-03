@@ -31,17 +31,22 @@ resources:
 
 env: []                   # Variables d'environnement
 
-# ── Base de données ────────────────────────────────────────────
 database:
   enabled: false
   type: ""
   name: ""
   storage: 1Gi
-  secretName: ""
   resources:
-    requests:
-      memory: "256Mi"
-      cpu: "250m"
     limits:
-      memory: "512Mi"
-      cpu: "500m"
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+  # 🆕 Haute Disponibilité
+  ha:
+    enabled: true
+    replicas: 2  # Nombre de réplicas
+    proxy:
+      enabled: true
+      replicas: 2  # Nombre d'instances du proxy
