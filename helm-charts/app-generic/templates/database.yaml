@@ -5,6 +5,8 @@
 {{- $secret  := include "app-generic.dbSecretName" . }}
 {{- $port    := include "app-generic.dbPort" . | trim }}
 {{- $image   := include "app-generic.dbImage" . }}
+
+# ── SECRET ─────────────────────────────────────────────────────
 ---
 apiVersion: v1
 kind: Secret
@@ -21,42 +23,51 @@ stringData:
   {{- if eq .Values.database.type "mysql" }}
   root-password: "rootchangeme123"
   {{- end }}
+
+# ── PRIMARY SERVICE (Headless pour StatefulSet) ────────────────
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ $svcName }}
+  name: {{ $svcName }}-primary
   namespace: {{ .Release.Namespace }}
   labels:
     app: {{ $name }}
     component: database
+    role: primary
 spec:
   clusterIP: None
   selector:
     app: {{ $dbName }}
+    role: primary
   ports:
     - name: db
       port: {{ $port }}
       targetPort: {{ $port }}
+
+# ── PRIMARY STATEFULSET ────────────────────────────────────────
 ---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ $dbName }}
+  name: {{ $dbName }}-primary
   namespace: {{ .Release.Namespace }}
   labels:
     app: {{ $name }}
     component: database
+    role: primary
 spec:
-  serviceName: {{ $svcName }}
-  replicas: 1
+  serviceName: {{ $svcName }}-primary
+  replicas: 1  # Toujours 1 primary
   selector:
     matchLabels:
       app: {{ $dbName }}
+      role: primary
   template:
     metadata:
       labels:
         app: {{ $dbName }}
+        role: primary
     spec:
       containers:
         - name: db
@@ -79,6 +90,8 @@ spec:
                   key: password
             - name: PGDATA
               value: "/var/lib/postgresql/data/pgdata"
+            - name: POSTGRES_REPLICATION_MODE
+              value: "master"
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", "admin"]
@@ -150,4 +163,173 @@ spec:
         resources:
           requests:
             storage: {{ .Values.database.storage }}
+
+# ── REPLICA SERVICE (Headless pour StatefulSet) ────────────────
+{{- if and .Values.database.ha .Values.database.ha.enabled (gt (.Values.database.ha.replicas | int) 0) }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $svcName }}-replica
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ $name }}
+    component: database
+    role: replica
+spec:
+  clusterIP: None
+  selector:
+    app: {{ $dbName }}
+    role: replica
+  ports:
+    - name: db
+      port: {{ $port }}
+      targetPort: {{ $port }}
+
+# ── REPLICA STATEFULSET ────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $dbName }}-replica
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ $name }}
+    component: database
+    role: replica
+spec:
+  serviceName: {{ $svcName }}-replica
+  replicas: {{ .Values.database.ha.replicas | default 2 }}
+  selector:
+    matchLabels:
+      app: {{ $dbName }}
+      role: replica
+  template:
+    metadata:
+      labels:
+        app: {{ $dbName }}
+        role: replica
+    spec:
+      containers:
+        - name: db
+          image: {{ $image }}
+          ports:
+            - containerPort: {{ $port }}
+          {{- if eq .Values.database.type "postgresql" }}
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.database.name | quote }}
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: password
+            - name: PGDATA
+              value: "/var/lib/postgresql/data/pgdata"
+            - name: POSTGRES_MASTER_HOST
+              value: "{{ $svcName }}-primary"
+            - name: POSTGRES_REPLICATION_MODE
+              value: "slave"
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "admin"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 6
+          {{- end }}
+          volumeMounts:
+            - name: db-storage
+              {{- if eq .Values.database.type "postgresql" }}
+              mountPath: /var/lib/postgresql/data
+              {{- end }}
+          resources:
+            {{- toYaml .Values.database.resources | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: db-storage
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.database.storage }}
+
+# ── PROXY SERVICE (PgBouncer/HAProxy) ──────────────────────────
+{{- if .Values.database.ha.proxy.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $svcName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ $name }}
+    component: database
+    role: proxy
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ $dbName }}-proxy
+  ports:
+    - name: db
+      port: {{ $port }}
+      targetPort: {{ $port }}
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $dbName }}-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ $name }}
+    component: database
+    role: proxy
+spec:
+  replicas: {{ .Values.database.ha.proxy.replicas | default 2 }}
+  selector:
+    matchLabels:
+      app: {{ $dbName }}-proxy
+  template:
+    metadata:
+      labels:
+        app: {{ $dbName }}-proxy
+    spec:
+      containers:
+        - name: proxy
+          {{- if eq .Values.database.type "postgresql" }}
+          image: edoburu/pgbouncer:latest
+          env:
+            - name: DATABASE_URL
+              value: "postgres://$(DB_USER):$(DB_PASS)@{{ $svcName }}-primary:{{ $port }}/{{ .Values.database.name }}"
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: username
+            - name: DB_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: password
+            - name: POOL_MODE
+              value: "transaction"
+            - name: MAX_CLIENT_CONN
+              value: "1000"
+          ports:
+            - containerPort: {{ $port }}
+          {{- end }}
+          resources:
+            limits:
+              cpu: 250m
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+{{- end }}
+{{- end }}
 {{- end }}
