@@ -260,7 +260,7 @@ spec:
             - name: POOL_MODE
               value: "transaction"
             - name: AUTH_TYPE
-              value: "md5"
+              value: "scram-sha-256"
             - name: MAX_CLIENT_CONN
               value: "100"
             - name: MAX_DB_SIZE
