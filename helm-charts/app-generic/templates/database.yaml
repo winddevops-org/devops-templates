@@ -245,8 +245,6 @@ spec:
           {{- if eq .Values.database.type "postgresql" }}
           image: edoburu/pgbouncer:latest
           env:
-            - name: DATABASE_URL
-              value: "postgres://$(DB_USER):$(DB_PASS)@{{ $svcName }}-primary:{{ $port }}/{{ .Values.database.name }}"
             - name: DB_USER
               valueFrom:
                 secretKeyRef:
@@ -257,8 +255,18 @@ spec:
                 secretKeyRef:
                   name: {{ $secret }}
                   key: password
+            - name: DATABASE_URL
+              value: "postgres://$(DB_USER):$(DB_PASS)@{{ $svcName }}-primary:{{ $port }}/{{ .Values.database.name }}"
             - name: POOL_MODE
               value: "transaction"
+            - name: AUTH_TYPE
+              value: "md5"
+            - name: MAX_CLIENT_CONN
+              value: "100"
+            - name: MAX_DB_SIZE
+              value: "0"
+            - name: DEFAULT_POOL_SIZE
+              value: "20"
           ports:
             - containerPort: {{ $port }}
           {{- end }}
