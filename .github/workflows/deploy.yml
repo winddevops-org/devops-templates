@@ -20,34 +20,62 @@ jobs:
       - name: Detect mono vs micro
         id: detect
         run: |
-          SERVICE_COUNT=0
+          # Compter les microservices à la racine (ancien pattern)
+          SERVICE_COUNT_ROOT=0
           for dir in */; do
             dir="${dir%/}"
             case "${dir}" in
               frontend|backend|.github|.git|node_modules|target|dist|docs|scripts|config|helm|k8s) continue ;;
             esac
-            [ -f "${dir}/Dockerfile" ] && SERVICE_COUNT=$((SERVICE_COUNT + 1))
+            [ -f "${dir}/Dockerfile" ] && SERVICE_COUNT_ROOT=$((SERVICE_COUNT_ROOT + 1))
           done
+
+          # Compter les microservices DANS backend/ (nouveau pattern)
+          SERVICE_COUNT_BACKEND=0
+          if [ -d "backend" ]; then
+            for dir in backend/*/; do
+              [ -d "${dir}" ] || continue
+              dir="${dir%/}"
+              dir="${dir##*/}"
+              [ -f "backend/${dir}/Dockerfile" ] && SERVICE_COUNT_BACKEND=$((SERVICE_COUNT_BACKEND + 1))
+            done
+          fi
+
+          # Total des microservices
+          TOTAL_SERVICES=$((SERVICE_COUNT_ROOT + SERVICE_COUNT_BACKEND))
+
+          # Vérifier si c'est un projet "classique" mono/dual
           HAS_CLASSIC="false"
           { [ -f "frontend/Dockerfile" ] || [ -f "Dockerfile.frontend" ] || \
             [ -f "backend/Dockerfile"  ] || [ -f "Dockerfile.backend"  ] || \
             [ -f "Dockerfile" ]; } && HAS_CLASSIC="true"
-          if [ "${SERVICE_COUNT}" -ge 2 ] && [ "${HAS_CLASSIC}" = "false" ]; then
+
+          echo "🔍 Analyse :"
+          echo "   - Microservices à la racine : ${SERVICE_COUNT_ROOT}"
+          echo "   - Microservices dans backend/ : ${SERVICE_COUNT_BACKEND}"
+          echo "   - Total microservices : ${TOTAL_SERVICES}"
+          echo "   - Structure classique : ${HAS_CLASSIC}"
+
+          # Décision : micro si plusieurs services ET pas de structure classique pure
+          if [ "${TOTAL_SERVICES}" -ge 2 ]; then
             echo "mode=micro" >> "$GITHUB_OUTPUT"
-            echo "✅ Mode détecté : MICROSERVICES (${SERVICE_COUNT} services)"
-          else
+            echo "✅ Mode détecté : MICROSERVICES (${TOTAL_SERVICES} services)"
+          elif [ "${HAS_CLASSIC}" = "true" ]; then
             echo "mode=mono" >> "$GITHUB_OUTPUT"
             echo "✅ Mode détecté : MONO"
+          else
+            echo "mode=mono" >> "$GITHUB_OUTPUT"
+            echo "✅ Mode détecté : MONO (défaut)"
           fi
 
   mono:
     needs: detect
     if: needs.detect.outputs.mode == 'mono'
     uses: winddevops-org/devops-templates/.github/workflows/mono-pipeline.yml@main
-    secrets: inherit  # <--- CORRECTION : Transmet tous les secrets automatiquement
+    secrets: inherit
 
   micro:
     needs: detect
     if: needs.detect.outputs.mode == 'micro'
     uses: winddevops-org/devops-templates/.github/workflows/micro-pipeline.yml@main
-    secrets: inherit  # <--- CORRECTION : Transmet tous les secrets automatiquement
+    secrets: inherit
