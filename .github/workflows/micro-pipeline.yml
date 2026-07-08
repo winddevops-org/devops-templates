@@ -431,13 +431,3 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
-ARGOEOF
-              echo "✅ ArgoCD Application créée pour ${COMP}"
-            fi
-          done
-
-          git add .
-          git diff --cached --quiet && echo "Rien à commiter." && exit 0
-          git pull --rebase origin main
-          git commit -m "[${APP_NAME}] deploy all microservices -> ${SHA}"
-          git push origin main
