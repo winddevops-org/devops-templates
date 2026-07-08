@@ -32,6 +32,7 @@ jobs:
           SERVICES="["
           FIRST=true
 
+          # 1. Scanner à la racine
           for dir in */; do
             dir="${dir%/}"
             case "${dir}" in
@@ -45,6 +46,7 @@ jobs:
             fi
           done
 
+          # 2. Scanner dans backend/
           if [ -d "backend" ]; then
             for dir in backend/*/; do
               [ -d "${dir}" ] || continue
@@ -63,7 +65,7 @@ jobs:
           echo "services=${SERVICES}" >> "$GITHUB_OUTPUT"
           echo "📦 Services trouvés : ${SERVICES}"
 
-  # ── BUILD SERVICE ──────────────────────────────────────────────
+  # ── BUILD SERVICE : Matrice pour chaque microservice ────────────
   build-service:
     needs: discover
     runs-on: self-hosted
@@ -99,12 +101,15 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      # ── SET SERVICE NAME ───────────────────────────────────────
       - name: Set service name
         run: |
           SERVICE_NAME=$(basename "${{ env.SERVICE_PATH }}")
           echo "SERVICE=${SERVICE_NAME}" >> "$GITHUB_ENV"
           echo "IMAGE=${{ env.REGISTRY }}/${{ env.APP_NAME }}-${SERVICE_NAME}:${{ github.sha }}" >> "$GITHUB_ENV"
+          echo "✅ Service: ${SERVICE_NAME} | Path: ${{ env.SERVICE_PATH }}"
 
+      # ── DETECT TECHNOLOGY ────────────────────────────────────
       - name: Detect technology & Database
         run: |
           SERVICE_PATH="${{ env.SERVICE_PATH }}"
@@ -158,6 +163,7 @@ jobs:
           echo "DB_TYPE=${DB_TYPE}" >> "$GITHUB_ENV"
           echo "✅ Service: ${{ env.SERVICE }} | DB: ${DB_TYPE}"
 
+      # ── SKIP INTELLIGENT ──────────────────────────────────────
       - name: "🔍 Vérifier si l'image existe déjà"
         id: check_image
         run: |
@@ -168,7 +174,13 @@ jobs:
             echo "LOCAL_IMAGE=${IMG}" >> "$GITHUB_ENV"
           fi
           echo "SKIP_BUILD=${SKIP}" >> "$GITHUB_ENV"
+          if [ "$SKIP" = "true" ]; then
+            echo "✅ Image déjà présente pour ce commit. Skip Build & Push."
+          else
+            echo "🚀 Image non trouvée. Build & Push lancé."
+          fi
 
+      # ── DOCKER LOGIN ──────────────────────────────────────────
       - name: Trust Nexus certificate
         if: env.SKIP_BUILD != 'true'
         run: |
@@ -181,6 +193,7 @@ jobs:
         if: env.SKIP_BUILD != 'true'
         run: echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
 
+      # ── INSTALL FRONTEND ──────────────────────────────────────
       - name: Install frontend dependencies
         if: env.HAS_ANGULAR == 'true' && env.SKIP_BUILD != 'true'
         run: |
@@ -189,6 +202,7 @@ jobs:
             192.168.1.239:8085/selfkhaoula/node:20-alpine \
             npm install --legacy-peer-deps --loglevel=error --no-fund
 
+      # ── TESTS ─────────────────────────────────────────────────
       - name: "🧪 Test Angular"
         if: env.HAS_ANGULAR == 'true' && env.SKIP_BUILD != 'true'
         run: |
@@ -197,7 +211,6 @@ jobs:
             192.168.1.239:8085/selfkhaoula/node:20-browsers \
             npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox 2>&1 | tee "${{ env.SERVICE }}-test.log"
 
-      # ── ✅ TEST JAVA AVEC SPRING CLOUD DÉSACTIVÉ ──────────────
       - name: "🧪 Test Java (Spring Cloud disabled)"
         if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
         run: |
@@ -218,12 +231,10 @@ jobs:
               -Deureka.client.enabled=false \
               -DskipTests=false \
           || {
-            echo "⚠️ Tests échoués, on retente sans tests d'intégration..."
-            docker run --rm --network host --user "$(id -u):$(id -g)" \
-              -v "$PWD/${{ env.SERVICE_PATH }}:/app" -w /app \
-              -v "$HOME/.m2:/root/.m2" \
-              192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
-              mvn test -B -DskipTests=false -Dtest="!*IntegrationTest,!*IT" || true
+            echo "=== SUREFIRE FAILURE REPORTS ==="
+            find "$PWD/${{ env.SERVICE_PATH }}/target/surefire-reports" -name "*.txt" \
+              -exec echo "--- {} ---" \; -exec cat {} \; 2>/dev/null || true
+            exit 1
           }
 
       - name: "🧪 Test Python"
@@ -242,26 +253,47 @@ jobs:
             192.168.1.239:8085/selfkhaoula/golang:1.22-alpine \
             go test ./... -v
 
+      # ── LINT ──────────────────────────────────────────────────
       - name: "🔍 Lint frontend (ESLint)"
         if: env.HAS_ANGULAR == 'true' && env.SKIP_BUILD != 'true'
         run: |
           docker run --rm --user "$(id -u):$(id -g)" \
             -v "$PWD/${{ env.SERVICE_PATH }}:/app" -w /app \
             192.168.1.239:8085/selfkhaoula/node:20-alpine \
-            sh -c "if node -e \"const p=require('./package.json'); process.exit(p.scripts&&p.scripts.lint?0:1);\" 2>/dev/null; then npm run lint; else echo '⚠️ Pas de script lint'; fi"
+            sh -c "if node -e \"const p=require('./package.json'); process.exit(p.scripts&&p.scripts.lint?0:1);\" 2>/dev/null; then npm run lint; else echo '⚠️ Pas de script lint, ignoré.'; fi"
+
+      - name: "🔍 Lint backend (Checkstyle)"
+        if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
+        run: |
+          if grep -qi "checkstyle" "${{ env.SERVICE_PATH }}/pom.xml"; then
+            docker run --rm --user "$(id -u):$(id -g)" \
+              -v "$PWD/${{ env.SERVICE_PATH }}:/app" -w /app \
+              192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
+              mvn checkstyle:check -B
+          else
+            echo "⚠️ Checkstyle non configuré, ignoré."
+          fi
 
       - name: "🔍 Lint Dockerfile (hadolint)"
         if: env.SKIP_BUILD != 'true'
         run: |
           DOCKERFILE="${{ env.SERVICE_PATH }}/Dockerfile"
           if [ ! -f "${DOCKERFILE}" ]; then
-            echo "⚠️ Dockerfile non trouvé, ignoré."
+            echo "⚠️ Dockerfile non trouvé: ${DOCKERFILE}, ignoré."
             exit 0
           fi
+          if ! grep -q '^FROM\s' "${DOCKERFILE}"; then
+            echo "❌ ${DOCKERFILE} ne contient aucune instruction FROM."
+            head -n10 "${DOCKERFILE}"
+            exit 1
+          fi
+          echo "→ Lint: ${DOCKERFILE}"
           docker run --rm -v "${GITHUB_WORKSPACE}/${{ env.SERVICE_PATH }}:/mnt" \
             192.168.1.239:8085/selfkhaoula/hadolint:latest \
-            hadolint --failure-threshold error /mnt/Dockerfile || true
+            hadolint --failure-threshold error /mnt/Dockerfile || \
+            echo "⚠️ hadolint warnings ignorés pour ${DOCKERFILE}"
 
+      # ── BUILD & PUSH ──────────────────────────────────────────
       - name: "🐳 Build"
         if: env.SKIP_BUILD != 'true'
         run: |
@@ -280,7 +312,7 @@ jobs:
         run: |
           CONTAINER_ID=$(docker run -d --rm "${{ env.IMAGE }}" 2>/dev/null || true)
           if [ -z "${CONTAINER_ID}" ]; then
-            echo "❌ Container non démarré"
+            echo "❌ Container non démarré : ${{ env.IMAGE }}"
             exit 1
           fi
           sleep 10
@@ -291,13 +323,13 @@ jobs:
             [ "${EXIT_CODE}" != "0" ] && echo "❌ Smoke test échoué (exit ${EXIT_CODE})" && exit 1
           fi
           docker stop "${CONTAINER_ID}" 2>/dev/null || true
-          echo "✅ Smoke test OK"
+          echo "✅ Smoke test OK : ${{ env.SERVICE }}"
 
       - name: "🐳 Push"
         if: env.SKIP_BUILD != 'true'
         run: docker push "${{ env.IMAGE }}"
 
-  # ── GITOPS ─────────────────────────────────────────────────────
+  # ── GITOPS : Mise à jour du repo GitOps ─────────────────────────
   gitops:
     needs: [discover, build-service]
     runs-on: self-hosted
@@ -375,7 +407,7 @@ jobs:
             else
               sed -i "s|repository:.*|repository: \"${REGISTRY}/${COMP}\"|" "${VPATH}"
               sed -i "s|tag:.*|tag: \"${SHA}\"|" "${VPATH}"
-              echo "✅ values.yaml mis à jour pour ${COMP}"
+              echo "✅ values.yaml mis à jour pour ${COMP} → ${SHA}"
             fi
 
             APATH="argocd-applications/${COMP}.yaml"
@@ -412,8 +444,9 @@ jobs:
             fi
           done
 
+          # ✅ ORDRE CORRECT : add → commit → pull → push
           git add .
           git diff --cached --quiet && echo "Rien à commiter." && exit 0
-          git pull --rebase origin main
           git commit -m "[${APP_NAME}] deploy all microservices -> ${SHA}"
+          git pull --rebase origin main
           git push origin main
