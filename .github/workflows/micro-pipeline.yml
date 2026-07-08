@@ -88,7 +88,6 @@ jobs:
           SERVICE="${{ env.SERVICE }}"
           DB_TYPE="none"
 
-          # Java/Maven
           if [ -f "${SERVICE}/pom.xml" ]; then
             echo "HAS_MAVEN=true" >> "$GITHUB_ENV"
             JAVA_VERSION=$(grep -oP '(?<=<java.version>)[^<]+' "${SERVICE}/pom.xml" 2>/dev/null | head -1)
@@ -105,7 +104,6 @@ jobs:
             echo "HAS_MAVEN=false" >> "$GITHUB_ENV"
           fi
 
-          # Python
           if [ -f "${SERVICE}/requirements.txt" ]; then
             echo "HAS_PYTHON=true" >> "$GITHUB_ENV"
             if grep -q "psycopg2" "${SERVICE}/requirements.txt"; then DB_TYPE="postgresql"
@@ -116,7 +114,6 @@ jobs:
             echo "HAS_PYTHON=false" >> "$GITHUB_ENV"
           fi
 
-          # Go
           if [ -f "${SERVICE}/go.mod" ]; then
             echo "HAS_GO=true" >> "$GITHUB_ENV"
             if grep -q "lib/pq" "${SERVICE}/go.mod" || grep -q "pgx" "${SERVICE}/go.mod"; then DB_TYPE="postgresql"
@@ -127,7 +124,6 @@ jobs:
             echo "HAS_GO=false" >> "$GITHUB_ENV"
           fi
 
-          # Node.js
           if [ -f "${SERVICE}/package.json" ]; then
             if grep -q '"pg"' "${SERVICE}/package.json"; then DB_TYPE="postgresql"
             elif grep -q '"mysql2"' "${SERVICE}/package.json"; then DB_TYPE="mysql"
@@ -135,7 +131,6 @@ jobs:
             fi
           fi
 
-          # Angular/Frontend
           [ -f "${SERVICE}/angular.json" ] && echo "HAS_ANGULAR=true" >> "$GITHUB_ENV" || echo "HAS_ANGULAR=false" >> "$GITHUB_ENV"
 
           echo "DB_TYPE=${DB_TYPE}" >> "$GITHUB_ENV"
@@ -337,7 +332,6 @@ jobs:
           git config user.email "ci@github.com"
           git config user.name "GitHub Actions"
 
-          # Parse la liste des services
           SERVICES_JSON='${{ env.SERVICES }}'
           SERVICES_LIST=$(echo "${SERVICES_JSON}" | jq -r '.[]')
 
@@ -347,53 +341,39 @@ jobs:
             mkdir -p "$(dirname "${VPATH}")"
 
             if [ ! -f "${VPATH}" ]; then
-              cat > "${VPATH}" <<VALEOF
-name: ${COMP}
-namespace: staging-${COMP}
-replicaCount: 1
-image:
-  repository: "${REGISTRY}/${COMP}"
-  tag: "${SHA}"
-  pullPolicy: IfNotPresent
-imagePullSecrets:
-  - name: nexus-registry-secret
-service:
-  type: ClusterIP
-  port: 80
-  targetPort: 80
-ingress:
-  enabled: true
-  className: nginx
-  host: ${COMP}.staging.local
-  path: /
-  pathType: Prefix
-resources:
-  limits:
-    cpu: 500m
-    memory: 512Mi
-  requests:
-    cpu: 250m
-    memory: 256Mi
-env: []
-database:
-  enabled: false
-  type: ""
-  name: ""
-  storage: 1Gi
-  resources:
-    limits:
-      cpu: 500m
-      memory: 512Mi
-    requests:
-      cpu: 250m
-      memory: 256Mi
-  ha:
-    enabled: true
-    replicas: 2
-    proxy:
-      enabled: true
-      replicas: 2
-VALEOF
+              printf '%s\n' \
+                "name: ${COMP}" \
+                "namespace: staging-${COMP}" \
+                "replicaCount: 1" \
+                "image:" \
+                "  repository: \"${REGISTRY}/${COMP}\"" \
+                "  tag: \"${SHA}\"" \
+                "  pullPolicy: IfNotPresent" \
+                "imagePullSecrets:" \
+                "- name: nexus-registry-secret" \
+                "service:" \
+                "  type: ClusterIP" \
+                "  port: 80" \
+                "  targetPort: 80" \
+                "ingress:" \
+                "  enabled: true" \
+                "  className: nginx" \
+                "  host: ${COMP}.staging.local" \
+                "  path: /" \
+                "  pathType: Prefix" \
+                "resources:" \
+                "  limits:" \
+                "    cpu: 500m" \
+                "    memory: 512Mi" \
+                "  requests:" \
+                "    cpu: 250m" \
+                "    memory: 256Mi" \
+                "env: []" \
+                "database:" \
+                "  enabled: false" \
+                "  type: \"\"" \
+                "  name: \"\"" \
+                "  storage: 1Gi" > "${VPATH}"
               echo "✅ values.yaml créé pour ${COMP}"
             else
               sed -i "s|repository:.*|repository: \"${REGISTRY}/${COMP}\"|" "${VPATH}"
@@ -404,30 +384,39 @@ VALEOF
             APATH="argocd-applications/${COMP}.yaml"
             mkdir -p argocd-applications
             if [ ! -f "${APATH}" ]; then
-              cat > "${APATH}" <<ARGOEOF
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: ${COMP}
-  namespace: argocd
-spec:
-  project: stagiaires
-  sources:
-    - repoURL: https://github.com/winddevops-org/devops-templates
-      targetRevision: main
-      path: helm-charts/app-generic
-      helm:
-        valueFiles:
-          - \$values/environments/staging/${COMP}/values.yaml
-    - repoURL: https://github.com/winddevops-org/gitops-environments
-      targetRevision: main
-      ref: values
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: staging-${COMP}
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
+              printf '%s\n' \
+                "apiVersion: argoproj.io/v1alpha1" \
+                "kind: Application" \
+                "metadata:" \
+                "  name: ${COMP}" \
+                "  namespace: argocd" \
+                "spec:" \
+                "  project: stagiaires" \
+                "  sources:" \
+                "    - repoURL: https://github.com/winddevops-org/devops-templates" \
+                "      targetRevision: main" \
+                "      path: helm-charts/app-generic" \
+                "      helm:" \
+                "        valueFiles:" \
+                "          - \$values/environments/staging/${COMP}/values.yaml" \
+                "    - repoURL: https://github.com/winddevops-org/gitops-environments" \
+                "      targetRevision: main" \
+                "      ref: values" \
+                "  destination:" \
+                "    server: https://kubernetes.default.svc" \
+                "    namespace: staging-${COMP}" \
+                "  syncPolicy:" \
+                "    automated:" \
+                "      prune: true" \
+                "      selfHeal: true" \
+                "    syncOptions:" \
+                "      - CreateNamespace=true" > "${APATH}"
+              echo "✅ ArgoCD Application créée pour ${COMP}"
+            fi
+          done
+
+          git add .
+          git diff --cached --quiet && echo "Rien à commiter." && exit 0
+          git pull --rebase origin main
+          git commit -m "[${APP_NAME}] deploy all microservices -> ${SHA}"
+          git push origin main
