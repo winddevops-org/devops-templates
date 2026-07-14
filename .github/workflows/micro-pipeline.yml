@@ -224,12 +224,13 @@ jobs:
             -e HOME=/home/user \
             192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
             mvn test -B \
-              -Dspring.profiles.active=test \
+              -Dspring.profiles.active=native,test \
               -Dspring.cloud.config.enabled=false \
               -Dspring.cloud.config.fail-fast=false \
               -Dspring.cloud.discovery.enabled=false \
               -Dspring.cloud.service-registry.auto-registration.enabled=false \
               -Deureka.client.enabled=false \
+              -Dspring.cloud.config.server.native.search-locations=classpath:/ \
               -DskipTests=false \
               -Dspring.datasource.url=jdbc:postgresql://localhost:5432/testdb \
               -Dspring.datasource.username=testuser \
