@@ -214,13 +214,17 @@ jobs:
       - name: "🧪 Test Java (Spring Cloud disabled)"
         if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
         run: |
+          # Fix: Ensure .m2 directory exists and is writable by current user before mounting
+          mkdir -p $HOME/.m2
+          
           docker run --rm --network host --user "$(id -u):$(id -g)" \
             -v "$PWD/${{ env.SERVICE_PATH }}:/app" -w /app \
-            -v "$HOME/.m2:/root/.m2" \
+            -v "$HOME/.m2:/home/user/.m2" \
             -e MAVEN_OPTS="-Xmx512m" \
             -e SPRING_DATASOURCE_URL="jdbc:postgresql://localhost:5432/testdb" \
             -e SPRING_DATASOURCE_USERNAME="testuser" \
             -e SPRING_DATASOURCE_PASSWORD="testpass" \
+            -e HOME=/home/user \
             192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
             mvn test -B \
               -Dspring.profiles.active=test \
