@@ -1,4 +1,4 @@
-name: Micro Pipeline Standardized
+name: Micro Pipeline Standardized (No Code Change Required)
 
 on:
   workflow_call:
@@ -211,7 +211,7 @@ jobs:
             192.168.1.239:8085/selfkhaoula/node:20-browsers \
             npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox 2>&1 | tee "${{ env.SERVICE }}-test.log"
 
-      - name: "🧪 Test Java (Standardized Spring Boot)"
+      - name: "🧪 Test Java (Safe Mode - No Code Changes)"
         if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
         run: |
           # Fix Permission Denied: Create .m2 in user home and map it correctly
@@ -221,9 +221,6 @@ jobs:
             -v "$PWD/${{ env.SERVICE_PATH }}:/app" -w /app \
             -v "$HOME/.m2:/home/user/.m2" \
             -e MAVEN_OPTS="-Xmx512m" \
-            -e SPRING_DATASOURCE_URL="jdbc:postgresql://localhost:5432/testdb" \
-            -e SPRING_DATASOURCE_USERNAME="testuser" \
-            -e SPRING_DATASOURCE_PASSWORD="testpass" \
             -e HOME=/home/user \
             192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
             mvn test -B \
@@ -234,6 +231,11 @@ jobs:
               -Dspring.cloud.service-registry.auto-registration.enabled=false \
               -Deureka.client.enabled=false \
               -DskipTests=false \
+              -Dspring.datasource.url=jdbc:postgresql://localhost:5432/testdb \
+              -Dspring.datasource.username=testuser \
+              -Dspring.datasource.password=testpass \
+              -Djwt.secret=ci-secret-key-for-testing-purposes-only-1234567890 \
+              -Djwt.expiration=3600000 \
           || {
             echo "=== SUREFIRE FAILURE REPORTS ==="
             find "$PWD/${{ env.SERVICE_PATH }}/target/surefire-reports" -name "*.txt" \
