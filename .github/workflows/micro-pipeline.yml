@@ -1,4 +1,4 @@
-name: Micro Pipeline
+name: Micro Pipeline Standardized
 
 on:
   workflow_call:
@@ -211,10 +211,10 @@ jobs:
             192.168.1.239:8085/selfkhaoula/node:20-browsers \
             npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox 2>&1 | tee "${{ env.SERVICE }}-test.log"
 
-      - name: "🧪 Test Java (Spring Cloud disabled)"
+      - name: "🧪 Test Java (Standardized Spring Boot)"
         if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
         run: |
-          # Fix: Ensure .m2 directory exists and is writable by current user before mounting
+          # Fix Permission Denied: Create .m2 in user home and map it correctly
           mkdir -p $HOME/.m2
           
           docker run --rm --network host --user "$(id -u):$(id -g)" \
