@@ -190,6 +190,21 @@ jobs:
               -Djwt.secret=ci-secret-key-for-testing-purposes-only-1234567890 \
               -Djwt.expiration=3600000 || echo "Tests failed but continuing pipeline"
 
+      - name: Package Application (Skip Tests)
+        if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
+        run: |
+          MAVEN_CACHE_DIR=$(mktemp -d)
+          docker run --rm --network host \
+            -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
+            -v "${MAVEN_CACHE_DIR}:/root/.m2" \
+            -w /app \
+            192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
+            mvn package -B -DskipTests \
+              -Dspring.profiles.active=prod \
+              -Dspring.cloud.config.enabled=false \
+              -Dspring.cloud.discovery.enabled=false \
+              -Deureka.client.enabled=false
+
       - name: Run Python tests
         if: env.HAS_PYTHON == 'true' && env.SKIP_BUILD != 'true'
         run: |
@@ -217,11 +232,6 @@ jobs:
             192.168.1.239:8085/selfkhaoula/node:20-browsers \
             npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox || echo "Tests failed but continuing pipeline"
 
-      - name: Clean target directory
-        if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
-        run: |
-          rm -rf "${{ env.SERVICE_PATH }}/target"
-
       - name: Build Docker image
         if: env.SKIP_BUILD != 'true'
         run: |
@@ -239,7 +249,7 @@ jobs:
         if: env.SKIP_BUILD != 'true'
         run: |
           CONTAINER_ID=$(docker run -d --name smoke-${{ env.SERVICE }} \
-            -e SPRING_PROFILES_ACTIVE=test \
+            -e SPRING_PROFILES_ACTIVE=prod \
             -e SPRING_CLOUD_CONFIG_ENABLED=false \
             -e SPRING_CLOUD_DISCOVERY_ENABLED=false \
             -e EUREKA_CLIENT_ENABLED=false \
