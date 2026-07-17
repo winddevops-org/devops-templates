@@ -280,7 +280,7 @@ jobs:
             -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
             -w /app \
             192.168.1.239:8085/selfkhaoula/node:20-browsers \
-            sh -c "npm ci && npm install @angular/animations@$(npm list @angular/core --json | jq -r '.dependencies["@angular/core"].version') && npx ng build --configuration production"
+            sh -c "npm ci --legacy-peer-deps && npx ng build --configuration production"
 
       - name: Build Docker image
         if: env.SKIP_BUILD != 'true'
@@ -380,6 +380,9 @@ jobs:
           SERVICES_JSON='${{ env.SERVICES }}'
           SERVICES_LIST=$(echo "${SERVICES_JSON}" | jq -r '.[]')
 
+          # Namespace unique pour toute l'application
+          TARGET_NAMESPACE="staging-${APP_NAME}"
+
           for SERVICE_PATH in ${SERVICES_LIST}; do
             SERVICE_NAME=$(basename "${SERVICE_PATH}")
             COMP="${APP_NAME}-${SERVICE_NAME}"
@@ -389,7 +392,7 @@ jobs:
             if [ ! -f "${VPATH}" ]; then
               printf '%s\n' \
                 "name: ${COMP}" \
-                "namespace: staging-${COMP}" \
+                "namespace: ${TARGET_NAMESPACE}" \
                 "replicaCount: 1" \
                 "image:" \
                 "  repository: \"${REGISTRY}/${COMP}\"" \
@@ -418,6 +421,8 @@ jobs:
             else
               sed -i "s|repository:.*|repository: \"${REGISTRY}/${COMP}\"|" "${VPATH}"
               sed -i "s|tag:.*|tag: \"${SHA}\"|" "${VPATH}"
+              # Force le namespace unique même sur les anciens fichiers
+              sed -i "s|namespace:.*|namespace: ${TARGET_NAMESPACE}|" "${VPATH}"
             fi
 
             APATH="argocd-applications/${COMP}.yaml"
@@ -443,7 +448,7 @@ jobs:
                 "      ref: values" \
                 "  destination:" \
                 "    server: https://kubernetes.default.svc" \
-                "    namespace: staging-${COMP}" \
+                "    namespace: ${TARGET_NAMESPACE}" \
                 "  syncPolicy:" \
                 "    automated:" \
                 "      prune: true" \
