@@ -41,8 +41,9 @@ jobs:
 
           for dir in */; do
             dir="${dir%/}"
+            # J'ai retiré 'frontend' et 'backend' de cette liste pour qu'ils soient scannés
             case "${dir}" in
-              .github|.git|node_modules|target|dist|docs|scripts|config|helm|k8s|frontend|backend) continue ;;
+              .github|.git|node_modules|target|dist|docs|scripts|config|helm|k8s) continue ;;
             esac
             if [ -f "${dir}/Dockerfile" ]; then
               [ "${FIRST}" = "false" ] && SERVICES="${SERVICES},"
@@ -51,6 +52,7 @@ jobs:
             fi
           done
 
+          # Cette partie reste pour scanner les sous-dossiers si tu as une structure backend/service1, etc.
           if [ -d "backend" ]; then
             for dir in backend/*/; do
               [ -d "${dir}" ] || continue
