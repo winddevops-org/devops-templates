@@ -2,7 +2,7 @@
 set -e
 
 if [ -z "${GITOPS_PAT}" ]; then
-  echo "❌ ERREUR CRITIQUE: Le secret GITOPS_TOKEN est vide ou non transmis !"
+  echo "ERREUR CRITIQUE: Le secret GITOPS_TOKEN est vide ou non transmis"
   exit 1
 fi
 
@@ -10,7 +10,7 @@ APP_NAME="${APP_NAME}"
 SHA="${SHA}"
 DB_TYPE="${DB_TYPE}"
 DEPLOY_MODE="${DEPLOY_MODE}"
-ENV="${ENV:-staging}"  # dev, staging, production
+ENV="${ENV:-staging}"
 REGISTRY="192.168.1.239:8085/selfkhaoula"
 GITOPS_REPO="https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git"
 
@@ -20,18 +20,14 @@ git config user.email "ci@github.com"
 git config user.name "GitHub Actions"
 git remote set-url origin "${GITOPS_REPO}"
 
-# 🎯 Fonction helper : extrait le nom de base de l'app (sans -front/-back)
 get_base_name() {
   local COMP="$1"
-  # Retire -front ou -back de la fin
   echo "${COMP}" | sed -E 's/-(front|back)$//'
 }
 
 write_values() {
   local COMP="$1" REPO="$2" TAG="$3"
   local BASE_NAME=$(get_base_name "${COMP}")
-  
-  # 🎯 Tous les composants d'une app vont dans le MÊME dossier
   local VPATH="environments/${ENV}/${BASE_NAME}/values-${COMP##*-}.yaml"
   
   mkdir -p "$(dirname "${VPATH}")"
@@ -84,11 +80,11 @@ database:
       enabled: true
       replicas: 2
 VALEOF
-    echo "✅ values-${COMP##*-}.yaml créé pour ${COMP} dans namespace ${ENV}-${BASE_NAME}"
+    echo "values-${COMP##*-}.yaml cree pour ${COMP} dans namespace ${ENV}-${BASE_NAME}"
   else
     sed -i "s|repository:.*|repository: \"${REPO}\"|" "${VPATH}"
     sed -i "s|tag:.*|tag: \"${TAG}\"|" "${VPATH}"
-    echo "✅ values-${COMP##*-}.yaml mis à jour pour ${COMP} → ${TAG}"
+    echo "values-${COMP##*-}.yaml mis a jour pour ${COMP}"
   fi
 }
 
@@ -99,7 +95,7 @@ write_db_values() {
   local DB_NAME="${BASE_NAME//-/_}_db"
 
   if [ "${DB_TYPE}" = "none" ] || [ "${DB_TYPE}" = "h2" ] || [ -z "${DB_TYPE}" ]; then
-    echo "ℹ️ Pas de DB externe pour ${COMP}"
+    echo "Pas de DB externe pour ${COMP}"
     return 0
   fi
 
@@ -135,14 +131,14 @@ database:
 
 with open(path, 'w') as f:
     f.write(content.rstrip() + new_block)
-print(f"✅ database.* injecté : type={db_type}, name={db_name}, namespace={env}-{base_name}")
+print(f"database injecte : type={db_type}, name={db_name}, namespace={env}-{base_name}")
 PYEOF
 }
 
 write_argocd() {
   local COMP="$1"
   local BASE_NAME=$(get_base_name "${COMP}")
-  local COMPONENT="${COMP##*-}"  # front ou back
+  local COMPONENT="${COMP##*-}"
   local APATH="argocd-applications/${COMP}-${ENV}.yaml"
   
   mkdir -p argocd-applications
@@ -176,8 +172,31 @@ spec:
     syncOptions:
       - CreateNamespace=true
 ARGOEOF
-  echo "✅ ArgoCD Application créée pour ${COMP} dans namespace ${ENV}-${BASE_NAME}"
+  echo "ArgoCD Application creee pour ${COMP} dans namespace ${ENV}-${BASE_NAME}"
 }
+
+if [ -z "${DEPLOY_MODE}" ]; then
+    HAS_FRONT=false
+    HAS_BACK=false
+    
+    if [ -d "frontend" ] && [ -f "frontend/Dockerfile" ]; then
+        HAS_FRONT=true
+    fi
+    if [ -d "backend" ] && [ -f "backend/Dockerfile" ]; then
+        HAS_BACK=true
+    fi
+    
+    if [ "${HAS_FRONT}" = "true" ] && [ "${HAS_BACK}" = "true" ]; then
+        DEPLOY_MODE="dual"
+    elif [ "${HAS_FRONT}" = "true" ]; then
+        DEPLOY_MODE="front-only"
+    elif [ "${HAS_BACK}" = "true" ]; then
+        DEPLOY_MODE="back-only"
+    else
+        DEPLOY_MODE="mono"
+    fi
+    echo "Mode auto-detecte: ${DEPLOY_MODE}"
+fi
 
 case "${DEPLOY_MODE}" in
   mono)
@@ -206,14 +225,14 @@ case "${DEPLOY_MODE}" in
     COMMIT_MSG="[${APP_NAME}] deploy front+back -> ${SHA} (env: ${ENV}, db: ${DB_TYPE})"
     ;;
   *)
-    echo "❌ DEPLOY_MODE inconnu : ${DEPLOY_MODE}"
+    echo "DEPLOY_MODE inconnu : ${DEPLOY_MODE}"
     exit 1
     ;;
 esac
 
 git add .
 if git diff --cached --quiet; then
-  echo "Rien à commiter."
+  echo "Rien a commiter."
   exit 0
 fi
 git commit -m "${COMMIT_MSG}"
