@@ -2,15 +2,18 @@ name: Micro Pipeline Standardized
 
 on:
   workflow_call:
+    inputs:
+      app_name:
+        required: false
+        type: string
     secrets:
       GITOPS_TOKEN:
-        required: true
-      NEXUS_PASSWORD:
         required: true
 
 env:
   REGISTRY: 192.168.1.239:8085/selfkhaoula
   NEXUS_CERT_PATH: /home/ubuntu/nexus/certs/nexus.crt
+  NEXUS_PASSWORD: nexus111
 
 jobs:
   discover:
@@ -24,7 +27,6 @@ jobs:
       - name: Scan services
         id: scan
         run: |
-          set -e
           APP_NAME=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
           echo "app_name=${APP_NAME}" >> "$GITHUB_OUTPUT"
 
@@ -59,10 +61,6 @@ jobs:
           SERVICES="${SERVICES}]"
           echo "services=${SERVICES}" >> "$GITHUB_OUTPUT"
 
-          if [ "${SERVICES}" = "[]" ]; then
-            echo "::warning::No services with a Dockerfile were discovered."
-          fi
-
   build-service:
     needs: discover
     runs-on: self-hosted
@@ -84,22 +82,17 @@ jobs:
           echo "SERVICE=${SERVICE_NAME}" >> "$GITHUB_ENV"
           echo "IMAGE=${{ env.REGISTRY }}/${{ env.APP_NAME }}-${SERVICE_NAME}:${{ github.sha }}" >> "$GITHUB_ENV"
 
-      # Pre-cleanup: kills leftover containers from a crashed / cancelled previous
-      # run on this same runner so reruns don't fail with "name already in use".
       - name: Pre-cleanup leftover containers
         run: |
           docker rm -f "test-db-${{ env.SERVICE }}" 2>/dev/null || true
           docker rm -f "smoke-${{ env.SERVICE }}" 2>/dev/null || true
 
-      # Login moved before the image-exists check: manifest inspect against an
-      # authenticated private registry without credentials can error out and
-      # look like "image not found", forcing pointless rebuilds every rerun.
       - name: Setup Docker credentials
         run: |
           sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
           sudo cp ${{ env.NEXUS_CERT_PATH }} /etc/docker/certs.d/192.168.1.239:8085/ca.crt
           sudo update-ca-certificates
-          echo "${{ secrets.NEXUS_PASSWORD }}" | docker login 192.168.1.239:8085 -u admin --password-stdin
+          echo "${{ env.NEXUS_PASSWORD }}" | docker login 192.168.1.239:8085 -u admin --password-stdin
 
       - name: Check if image exists
         id: check_image
@@ -125,7 +118,7 @@ jobs:
             HAS_MAVEN=true
             JAVA_VERSION=$(grep -oP '(?<=<java.version>)[^<]+' "${{ env.SERVICE_PATH }}/pom.xml" 2>/dev/null | head -1)
             [ -z "${JAVA_VERSION}" ] && JAVA_VERSION="17"
-
+            
             if grep -q "postgresql" "${{ env.SERVICE_PATH }}/pom.xml"; then DB_TYPE="postgresql"
             elif grep -q "mysql" "${{ env.SERVICE_PATH }}/pom.xml"; then DB_TYPE="mysql"
             elif grep -q "mongo" "${{ env.SERVICE_PATH }}/pom.xml"; then DB_TYPE="mongodb"
@@ -158,14 +151,12 @@ jobs:
           echo "JAVA_VERSION=${JAVA_VERSION}" >> "$GITHUB_ENV"
           echo "DB_TYPE=${DB_TYPE}" >> "$GITHUB_ENV"
 
-      # DB container is published via -p on a random host port (not --network host),
-      # so concurrent/sequential builds on this runner never collide on 5432/3306/27017.
       - name: Start database container
         if: env.SKIP_BUILD != 'true' && env.DB_TYPE != 'none'
         run: |
           DB_PORT=$((5432 + RANDOM % 1000))
           echo "DB_PORT=${DB_PORT}" >> "$GITHUB_ENV"
-
+          
           if [ "${{ env.DB_TYPE }}" = "postgresql" ]; then
             docker run -d --name test-db-${{ env.SERVICE }} \
               -e POSTGRES_USER=testuser \
@@ -183,18 +174,8 @@ jobs:
               -p ${DB_PORT}:3306 \
               mysql:8
             sleep 10
-          elif [ "${{ env.DB_TYPE }}" = "mongodb" ]; then
-            docker run -d --name test-db-${{ env.SERVICE }} \
-              -e MONGO_INITDB_ROOT_USERNAME=testuser \
-              -e MONGO_INITDB_ROOT_PASSWORD=testpass \
-              -p ${DB_PORT}:27017 \
-              mongo:6
-            sleep 5
           fi
 
-      # Tests are non-blocking on purpose (continue-on-error) since not every
-      # intern service has a finished test suite yet, but they now actually RUN
-      # (the old `-DskipTests` flag made this step a silent no-op).
       - name: Run Java tests
         if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
         continue-on-error: true
@@ -219,7 +200,6 @@ jobs:
               -Djwt.secret=ci-secret-key-for-testing-purposes-only-1234567890 \
               -Djwt.expiration=3600000
 
-      # Packaging is a real build artifact, so it must fail the job if it fails.
       - name: Package Application
         if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
         run: |
@@ -265,8 +245,6 @@ jobs:
             192.168.1.239:8085/selfkhaoula/node:20-browsers \
             npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox
 
-      # Build must fail the job on failure — a swallowed build failure previously
-      # let the pipeline continue on to scan/push/smoke-test a nonexistent image.
       - name: Build Docker image
         if: env.SKIP_BUILD != 'true'
         run: |
@@ -275,7 +253,6 @@ jobs:
             -t "${{ env.IMAGE }}" \
             "${{ env.SERVICE_PATH }}"
 
-      # Vulnerability scan stays non-blocking (informational) by design.
       - name: Security scan
         if: env.SKIP_BUILD != 'true'
         continue-on-error: true
@@ -293,7 +270,7 @@ jobs:
             -e SPRING_MAIL_HOST=localhost \
             -e SPRING_MAIL_PORT=25 \
             "${{ env.IMAGE }}")
-
+          
           MAX_WAIT=30
           WAITED=0
           while [ $WAITED -lt $MAX_WAIT ]; do
@@ -310,12 +287,11 @@ jobs:
             sleep 2
             WAITED=$((WAITED + 2))
           done
-
+          
           echo "Timeout after ${MAX_WAIT}s"
           docker logs "${CONTAINER_ID}"
           exit 1
 
-      # Push must fail the job on failure — this is what gitops relies on.
       - name: Push image
         if: env.SKIP_BUILD != 'true'
         run: docker push "${{ env.IMAGE }}"
@@ -354,7 +330,6 @@ jobs:
           SERVICES: ${{ needs.discover.outputs.services }}
           REGISTRY: 192.168.1.239:8085/selfkhaoula
         run: |
-          set -e
           git clone "https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git" gitops-environments
           cd gitops-environments
           git config user.email "ci@github.com"
@@ -443,8 +418,6 @@ jobs:
           fi
           git commit -m "[${APP_NAME}] deploy all microservices -> ${SHA}"
 
-          # Retry push with rebase: other app pipelines may push to the same
-          # gitops-environments repo around the same time.
           ATTEMPTS=0
           MAX_ATTEMPTS=5
           until git push origin main; do
