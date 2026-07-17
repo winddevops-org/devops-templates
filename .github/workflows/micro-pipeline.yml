@@ -167,6 +167,41 @@ jobs:
             sleep 10
           fi
 
+      - name: Create test profile configuration
+        if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
+        run: |
+          TEST_RESOURCES="${{ env.SERVICE_PATH }}/src/test/resources"
+          mkdir -p "${TEST_RESOURCES}"
+          
+          cat > "${TEST_RESOURCES}/application-test.yml" << EOF
+          spring:
+            cloud:
+              config:
+                enabled: false
+              discovery:
+                enabled: false
+            mail:
+              host: localhost
+              port: 25
+              username: test
+              password: test
+            datasource:
+              url: jdbc:postgresql://localhost:${{ env.DB_PORT }}/testdb
+              username: testuser
+              password: testpass
+              driver-class-name: org.postgresql.Driver
+            jpa:
+              hibernate:
+                ddl-auto: create-drop
+          eureka:
+            client:
+              enabled: false
+          management:
+            health:
+              mail:
+                enabled: false
+          EOF
+
       - name: Run tests
         if: env.SKIP_BUILD != 'true'
         run: |
@@ -180,6 +215,11 @@ jobs:
               mvn test -B \
                 -Dspring.profiles.active=test \
                 -Dspring.cloud.config.enabled=false \
+                -Dspring.cloud.discovery.enabled=false \
+                -Deureka.client.enabled=false \
+                -Dspring.mail.host=localhost \
+                -Dspring.mail.port=25 \
+                -Dmanagement.health.mail.enabled=false \
                 -Dspring.datasource.url=jdbc:postgresql://localhost:${{ env.DB_PORT }}/testdb \
                 -Dspring.datasource.username=testuser \
                 -Dspring.datasource.password=testpass
@@ -224,6 +264,8 @@ jobs:
           CONTAINER_ID=$(docker run -d --name smoke-${{ env.SERVICE }} \
             -e SPRING_PROFILES_ACTIVE=test \
             -e DB_HOST=localhost \
+            -e SPRING_MAIL_HOST=localhost \
+            -e SPRING_MAIL_PORT=25 \
             "${{ env.IMAGE }}")
           
           MAX_WAIT=30
