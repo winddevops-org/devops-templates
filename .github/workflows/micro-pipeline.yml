@@ -5,6 +5,8 @@ on:
     secrets:
       GITOPS_TOKEN:
         required: true
+      NEXUS_PASSWORD:
+        required: true
 
 env:
   REGISTRY: 192.168.1.239:8085/selfkhaoula
@@ -22,6 +24,7 @@ jobs:
       - name: Scan services
         id: scan
         run: |
+          set -e
           APP_NAME=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
           echo "app_name=${APP_NAME}" >> "$GITHUB_OUTPUT"
 
@@ -56,6 +59,10 @@ jobs:
           SERVICES="${SERVICES}]"
           echo "services=${SERVICES}" >> "$GITHUB_OUTPUT"
 
+          if [ "${SERVICES}" = "[]" ]; then
+            echo "::warning::No services with a Dockerfile were discovered."
+          fi
+
   build-service:
     needs: discover
     runs-on: self-hosted
@@ -77,6 +84,23 @@ jobs:
           echo "SERVICE=${SERVICE_NAME}" >> "$GITHUB_ENV"
           echo "IMAGE=${{ env.REGISTRY }}/${{ env.APP_NAME }}-${SERVICE_NAME}:${{ github.sha }}" >> "$GITHUB_ENV"
 
+      # Pre-cleanup: kills leftover containers from a crashed / cancelled previous
+      # run on this same runner so reruns don't fail with "name already in use".
+      - name: Pre-cleanup leftover containers
+        run: |
+          docker rm -f "test-db-${{ env.SERVICE }}" 2>/dev/null || true
+          docker rm -f "smoke-${{ env.SERVICE }}" 2>/dev/null || true
+
+      # Login moved before the image-exists check: manifest inspect against an
+      # authenticated private registry without credentials can error out and
+      # look like "image not found", forcing pointless rebuilds every rerun.
+      - name: Setup Docker credentials
+        run: |
+          sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
+          sudo cp ${{ env.NEXUS_CERT_PATH }} /etc/docker/certs.d/192.168.1.239:8085/ca.crt
+          sudo update-ca-certificates
+          echo "${{ secrets.NEXUS_PASSWORD }}" | docker login 192.168.1.239:8085 -u admin --password-stdin
+
       - name: Check if image exists
         id: check_image
         run: |
@@ -85,14 +109,6 @@ jobs:
             SKIP="true"
           fi
           echo "SKIP_BUILD=${SKIP}" >> "$GITHUB_ENV"
-
-      - name: Setup Docker credentials
-        if: env.SKIP_BUILD != 'true'
-        run: |
-          sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
-          sudo cp ${{ env.NEXUS_CERT_PATH }} /etc/docker/certs.d/192.168.1.239:8085/ca.crt
-          sudo update-ca-certificates
-          echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
 
       - name: Detect technology
         id: detect
@@ -109,7 +125,7 @@ jobs:
             HAS_MAVEN=true
             JAVA_VERSION=$(grep -oP '(?<=<java.version>)[^<]+' "${{ env.SERVICE_PATH }}/pom.xml" 2>/dev/null | head -1)
             [ -z "${JAVA_VERSION}" ] && JAVA_VERSION="17"
-            
+
             if grep -q "postgresql" "${{ env.SERVICE_PATH }}/pom.xml"; then DB_TYPE="postgresql"
             elif grep -q "mysql" "${{ env.SERVICE_PATH }}/pom.xml"; then DB_TYPE="mysql"
             elif grep -q "mongo" "${{ env.SERVICE_PATH }}/pom.xml"; then DB_TYPE="mongodb"
@@ -142,12 +158,14 @@ jobs:
           echo "JAVA_VERSION=${JAVA_VERSION}" >> "$GITHUB_ENV"
           echo "DB_TYPE=${DB_TYPE}" >> "$GITHUB_ENV"
 
+      # DB container is published via -p on a random host port (not --network host),
+      # so concurrent/sequential builds on this runner never collide on 5432/3306/27017.
       - name: Start database container
         if: env.SKIP_BUILD != 'true' && env.DB_TYPE != 'none'
         run: |
           DB_PORT=$((5432 + RANDOM % 1000))
           echo "DB_PORT=${DB_PORT}" >> "$GITHUB_ENV"
-          
+
           if [ "${{ env.DB_TYPE }}" = "postgresql" ]; then
             docker run -d --name test-db-${{ env.SERVICE }} \
               -e POSTGRES_USER=testuser \
@@ -165,10 +183,21 @@ jobs:
               -p ${DB_PORT}:3306 \
               mysql:8
             sleep 10
+          elif [ "${{ env.DB_TYPE }}" = "mongodb" ]; then
+            docker run -d --name test-db-${{ env.SERVICE }} \
+              -e MONGO_INITDB_ROOT_USERNAME=testuser \
+              -e MONGO_INITDB_ROOT_PASSWORD=testpass \
+              -p ${DB_PORT}:27017 \
+              mongo:6
+            sleep 5
           fi
 
+      # Tests are non-blocking on purpose (continue-on-error) since not every
+      # intern service has a finished test suite yet, but they now actually RUN
+      # (the old `-DskipTests` flag made this step a silent no-op).
       - name: Run Java tests
         if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
+        continue-on-error: true
         run: |
           MAVEN_CACHE_DIR=$(mktemp -d)
           docker run --rm --network host \
@@ -176,7 +205,7 @@ jobs:
             -v "${MAVEN_CACHE_DIR}:/root/.m2" \
             -w /app \
             192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
-            mvn test -B -DskipTests \
+            mvn test -B \
               -Dspring.profiles.active=test,native \
               -Dspring.cloud.config.enabled=false \
               -Dspring.cloud.discovery.enabled=false \
@@ -188,8 +217,9 @@ jobs:
               -Dspring.datasource.username=testuser \
               -Dspring.datasource.password=testpass \
               -Djwt.secret=ci-secret-key-for-testing-purposes-only-1234567890 \
-              -Djwt.expiration=3600000 || echo "Tests step completed"
+              -Djwt.expiration=3600000
 
+      # Packaging is a real build artifact, so it must fail the job if it fails.
       - name: Package Application
         if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
         run: |
@@ -203,47 +233,54 @@ jobs:
               -Dspring.profiles.active=prod \
               -Dspring.cloud.config.enabled=false \
               -Dspring.cloud.discovery.enabled=false \
-              -Deureka.client.enabled=false || echo "Packaging step completed"
+              -Deureka.client.enabled=false
 
       - name: Run Python tests
         if: env.HAS_PYTHON == 'true' && env.SKIP_BUILD != 'true'
+        continue-on-error: true
         run: |
           docker run --rm --network host \
             -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
             -w /app \
             192.168.1.239:8085/selfkhaoula/python:3.11-slim \
-            sh -c "pip install -r requirements.txt -q && pytest --tb=short" || echo "Tests step completed"
+            sh -c "pip install -r requirements.txt -q && pytest --tb=short"
 
       - name: Run Go tests
         if: env.HAS_GO == 'true' && env.SKIP_BUILD != 'true'
+        continue-on-error: true
         run: |
           docker run --rm --network host \
             -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
             -w /app \
             192.168.1.239:8085/selfkhaoula/golang:1.22-alpine \
-            go test ./... -v || echo "Tests step completed"
+            go test ./... -v
 
       - name: Run Angular tests
         if: env.HAS_ANGULAR == 'true' && env.SKIP_BUILD != 'true'
+        continue-on-error: true
         run: |
           docker run --rm \
             -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
             -w /app \
             192.168.1.239:8085/selfkhaoula/node:20-browsers \
-            npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox || echo "Tests step completed"
+            npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox
 
+      # Build must fail the job on failure — a swallowed build failure previously
+      # let the pipeline continue on to scan/push/smoke-test a nonexistent image.
       - name: Build Docker image
         if: env.SKIP_BUILD != 'true'
         run: |
           docker build \
             -f "${{ env.SERVICE_PATH }}/Dockerfile" \
             -t "${{ env.IMAGE }}" \
-            "${{ env.SERVICE_PATH }}" || echo "Build step completed"
+            "${{ env.SERVICE_PATH }}"
 
+      # Vulnerability scan stays non-blocking (informational) by design.
       - name: Security scan
         if: env.SKIP_BUILD != 'true'
+        continue-on-error: true
         run: |
-          trivy image --severity HIGH,CRITICAL --exit-code 0 "${{ env.IMAGE }}" || echo "Scan step completed"
+          trivy image --severity HIGH,CRITICAL --exit-code 0 "${{ env.IMAGE }}"
 
       - name: Smoke test
         if: env.SKIP_BUILD != 'true'
@@ -256,7 +293,7 @@ jobs:
             -e SPRING_MAIL_HOST=localhost \
             -e SPRING_MAIL_PORT=25 \
             "${{ env.IMAGE }}")
-          
+
           MAX_WAIT=30
           WAITED=0
           while [ $WAITED -lt $MAX_WAIT ]; do
@@ -273,14 +310,15 @@ jobs:
             sleep 2
             WAITED=$((WAITED + 2))
           done
-          
+
           echo "Timeout after ${MAX_WAIT}s"
           docker logs "${CONTAINER_ID}"
           exit 1
 
+      # Push must fail the job on failure — this is what gitops relies on.
       - name: Push image
         if: env.SKIP_BUILD != 'true'
-        run: docker push "${{ env.IMAGE }}" || echo "Push step completed"
+        run: docker push "${{ env.IMAGE }}"
 
       - name: Cleanup
         if: always()
@@ -292,6 +330,9 @@ jobs:
     needs: [discover, build-service]
     runs-on: self-hosted
     if: success()
+    concurrency:
+      group: gitops-environments-push
+      cancel-in-progress: false
     env:
       APP_NAME: ${{ needs.discover.outputs.app_name }}
 
@@ -313,6 +354,7 @@ jobs:
           SERVICES: ${{ needs.discover.outputs.services }}
           REGISTRY: 192.168.1.239:8085/selfkhaoula
         run: |
+          set -e
           git clone "https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git" gitops-environments
           cd gitops-environments
           git config user.email "ci@github.com"
@@ -395,7 +437,23 @@ jobs:
           done
 
           git add .
-          git diff --cached --quiet && echo "Nothing to commit." && exit 0
+          if git diff --cached --quiet; then
+            echo "Nothing to commit."
+            exit 0
+          fi
           git commit -m "[${APP_NAME}] deploy all microservices -> ${SHA}"
-          git pull --rebase origin main
-          git push origin main
+
+          # Retry push with rebase: other app pipelines may push to the same
+          # gitops-environments repo around the same time.
+          ATTEMPTS=0
+          MAX_ATTEMPTS=5
+          until git push origin main; do
+            ATTEMPTS=$((ATTEMPTS + 1))
+            if [ "${ATTEMPTS}" -ge "${MAX_ATTEMPTS}" ]; then
+              echo "Push failed after ${MAX_ATTEMPTS} attempts."
+              exit 1
+            fi
+            echo "Push rejected, rebasing and retrying (attempt ${ATTEMPTS}/${MAX_ATTEMPTS})..."
+            sleep $((RANDOM % 5 + 1))
+            git pull --rebase origin main
+          done
