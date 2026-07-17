@@ -9,11 +9,13 @@ on:
     secrets:
       GITOPS_TOKEN:
         required: true
+      NEXUS_PASSWORD:
+        required: true
 
 env:
   REGISTRY: 192.168.1.239:8085/selfkhaoula
   NEXUS_CERT_PATH: /home/ubuntu/nexus/certs/nexus.crt
-  NEXUS_PASSWORD: nexus111
+  NEXUS_USER: admin
 
 jobs:
   discover:
@@ -22,9 +24,8 @@ jobs:
       services: ${{ steps.scan.outputs.services }}
       app_name: ${{ steps.scan.outputs.app_name }}
     steps:
-      - name: Force Clean Workspace
+      - name: Clean previous build artifacts only
         run: |
-          docker rm -f $(docker ps -aq) 2>/dev/null || true
           sudo rm -rf "${{ github.workspace }}"/*
           sudo rm -rf "${{ github.workspace }}"/.??*
 
@@ -80,11 +81,10 @@ jobs:
       SERVICE_PATH: ${{ matrix.service }}
 
     steps:
-      - name: Force Clean Workspace & Pre-cleanup
+      - name: Clean workspace and previous test containers
         run: |
           docker rm -f "test-db-${{ matrix.service }}" 2>/dev/null || true
           docker rm -f "smoke-${{ matrix.service }}" 2>/dev/null || true
-          docker rm -f $(docker ps -aq) 2>/dev/null || true
           sudo rm -rf "${{ github.workspace }}"/*
           sudo rm -rf "${{ github.workspace }}"/.??*
 
@@ -101,7 +101,7 @@ jobs:
           sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
           sudo cp ${{ env.NEXUS_CERT_PATH }} /etc/docker/certs.d/192.168.1.239:8085/ca.crt
           sudo update-ca-certificates
-          echo "${{ env.NEXUS_PASSWORD }}" | docker login 192.168.1.239:8085 -u admin --password-stdin
+          echo "${{ secrets.NEXUS_PASSWORD }}" | docker login 192.168.1.239:8085 -u ${{ env.NEXUS_USER }} --password-stdin
 
       - name: Check if image exists
         id: check_image
@@ -191,7 +191,6 @@ jobs:
         run: |
           MAVEN_CACHE_DIR=$(mktemp -d)
           
-          # Create a temporary test configuration to handle missing MailSender and other beans
           mkdir -p "${{ env.SERVICE_PATH }}/src/test/resources"
           cat > "${{ env.SERVICE_PATH }}/src/test/resources/application-test.yml" << EOF
           spring:
