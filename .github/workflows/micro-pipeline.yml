@@ -9,13 +9,12 @@ on:
     secrets:
       GITOPS_TOKEN:
         required: true
-      NEXUS_PASSWORD:
-        required: true
 
 env:
   REGISTRY: 192.168.1.239:8085/selfkhaoula
   NEXUS_CERT_PATH: /home/ubuntu/nexus/certs/nexus.crt
   NEXUS_USER: admin
+  NEXUS_PASSWORD: nexus111
 
 jobs:
   discover:
@@ -24,7 +23,7 @@ jobs:
       services: ${{ steps.scan.outputs.services }}
       app_name: ${{ steps.scan.outputs.app_name }}
     steps:
-      - name: Clean previous build artifacts only
+      - name: Clean workspace files
         run: |
           sudo rm -rf "${{ github.workspace }}"/*
           sudo rm -rf "${{ github.workspace }}"/.??*
@@ -101,7 +100,7 @@ jobs:
           sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
           sudo cp ${{ env.NEXUS_CERT_PATH }} /etc/docker/certs.d/192.168.1.239:8085/ca.crt
           sudo update-ca-certificates
-          echo "${{ secrets.NEXUS_PASSWORD }}" | docker login 192.168.1.239:8085 -u ${{ env.NEXUS_USER }} --password-stdin
+          echo "${{ env.NEXUS_PASSWORD }}" | docker login 192.168.1.239:8085 -u ${{ env.NEXUS_USER }} --password-stdin
 
       - name: Check if image exists
         id: check_image
@@ -342,7 +341,7 @@ jobs:
       APP_NAME: ${{ needs.discover.outputs.app_name }}
 
     steps:
-      - name: Force Clean Workspace
+      - name: Clean workspace files
         run: |
           sudo rm -rf "${{ github.workspace }}"/*
           sudo rm -rf "${{ github.workspace }}"/.??*
