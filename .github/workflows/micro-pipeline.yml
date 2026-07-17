@@ -41,7 +41,6 @@ jobs:
 
           for dir in */; do
             dir="${dir%/}"
-            # J'ai retiré 'frontend' et 'backend' de cette liste pour qu'ils soient scannés
             case "${dir}" in
               .github|.git|node_modules|target|dist|docs|scripts|config|helm|k8s) continue ;;
             esac
@@ -52,7 +51,6 @@ jobs:
             fi
           done
 
-          # Cette partie reste pour scanner les sous-dossiers si tu as une structure backend/service1, etc.
           if [ -d "backend" ]; then
             for dir in backend/*/; do
               [ -d "${dir}" ] || continue
@@ -273,7 +271,7 @@ jobs:
             -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
             -w /app \
             192.168.1.239:8085/selfkhaoula/node:20-browsers \
-            npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox
+            sh -c "npm ci && npx ng test --watch=false --browsers=ChromeHeadlessNoSandbox"
 
       - name: Build Angular Application
         if: env.HAS_ANGULAR == 'true' && env.SKIP_BUILD != 'true'
@@ -282,7 +280,7 @@ jobs:
             -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
             -w /app \
             192.168.1.239:8085/selfkhaoula/node:20-browsers \
-            sh -c "npm ci && npm run build -- --configuration production"
+            sh -c "npm ci && npm install @angular/animations@$(npm list @angular/core --json | jq -r '.dependencies["@angular/core"].version') && npx ng build --configuration production"
 
       - name: Build Docker image
         if: env.SKIP_BUILD != 'true'
