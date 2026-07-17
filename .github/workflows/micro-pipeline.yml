@@ -22,6 +22,12 @@ jobs:
       services: ${{ steps.scan.outputs.services }}
       app_name: ${{ steps.scan.outputs.app_name }}
     steps:
+      - name: Force Clean Workspace
+        run: |
+          docker rm -f $(docker ps -aq) 2>/dev/null || true
+          sudo rm -rf "${{ github.workspace }}"/*
+          sudo rm -rf "${{ github.workspace }}"/.??*
+
       - uses: actions/checkout@v4
 
       - name: Scan services
@@ -74,6 +80,14 @@ jobs:
       SERVICE_PATH: ${{ matrix.service }}
 
     steps:
+      - name: Force Clean Workspace & Pre-cleanup
+        run: |
+          docker rm -f "test-db-${{ matrix.service }}" 2>/dev/null || true
+          docker rm -f "smoke-${{ matrix.service }}" 2>/dev/null || true
+          docker rm -f $(docker ps -aq) 2>/dev/null || true
+          sudo rm -rf "${{ github.workspace }}"/*
+          sudo rm -rf "${{ github.workspace }}"/.??*
+
       - uses: actions/checkout@v4
 
       - name: Set environment variables
@@ -81,11 +95,6 @@ jobs:
           SERVICE_NAME=$(basename "${{ env.SERVICE_PATH }}")
           echo "SERVICE=${SERVICE_NAME}" >> "$GITHUB_ENV"
           echo "IMAGE=${{ env.REGISTRY }}/${{ env.APP_NAME }}-${SERVICE_NAME}:${{ github.sha }}" >> "$GITHUB_ENV"
-
-      - name: Pre-cleanup leftover containers
-        run: |
-          docker rm -f "test-db-${{ env.SERVICE }}" 2>/dev/null || true
-          docker rm -f "smoke-${{ env.SERVICE }}" 2>/dev/null || true
 
       - name: Setup Docker credentials
         run: |
@@ -334,6 +343,11 @@ jobs:
       APP_NAME: ${{ needs.discover.outputs.app_name }}
 
     steps:
+      - name: Force Clean Workspace
+        run: |
+          sudo rm -rf "${{ github.workspace }}"/*
+          sudo rm -rf "${{ github.workspace }}"/.??*
+
       - uses: actions/checkout@v4
 
       - name: Checkout devops-templates
