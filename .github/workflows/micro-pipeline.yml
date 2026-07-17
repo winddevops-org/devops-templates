@@ -188,7 +188,7 @@ jobs:
               -Dspring.datasource.username=testuser \
               -Dspring.datasource.password=testpass \
               -Djwt.secret=ci-secret-key-for-testing-purposes-only-1234567890 \
-              -Djwt.expiration=3600000 || true
+              -Djwt.expiration=3600000 || echo "Tests failed but continuing pipeline"
 
       - name: Run Python tests
         if: env.HAS_PYTHON == 'true' && env.SKIP_BUILD != 'true'
@@ -197,7 +197,7 @@ jobs:
             -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
             -w /app \
             192.168.1.239:8085/selfkhaoula/python:3.11-slim \
-            sh -c "pip install -r requirements.txt -q && pytest --tb=short" || true
+            sh -c "pip install -r requirements.txt -q && pytest --tb=short" || echo "Tests failed but continuing pipeline"
 
       - name: Run Go tests
         if: env.HAS_GO == 'true' && env.SKIP_BUILD != 'true'
@@ -206,7 +206,7 @@ jobs:
             -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
             -w /app \
             192.168.1.239:8085/selfkhaoula/golang:1.22-alpine \
-            go test ./... -v || true
+            go test ./... -v || echo "Tests failed but continuing pipeline"
 
       - name: Run Angular tests
         if: env.HAS_ANGULAR == 'true' && env.SKIP_BUILD != 'true'
@@ -215,7 +215,12 @@ jobs:
             -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
             -w /app \
             192.168.1.239:8085/selfkhaoula/node:20-browsers \
-            npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox || true
+            npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox || echo "Tests failed but continuing pipeline"
+
+      - name: Clean target directory
+        if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
+        run: |
+          rm -rf "${{ env.SERVICE_PATH }}/target"
 
       - name: Build Docker image
         if: env.SKIP_BUILD != 'true'
