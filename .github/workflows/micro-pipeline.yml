@@ -273,6 +273,15 @@ jobs:
             192.168.1.239:8085/selfkhaoula/node:20-browsers \
             npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox
 
+      - name: Build Angular Application
+        if: env.HAS_ANGULAR == 'true' && env.SKIP_BUILD != 'true'
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
+            -w /app \
+            192.168.1.239:8085/selfkhaoula/node:20-browsers \
+            sh -c "npm ci && npm run build -- --configuration production"
+
       - name: Build Docker image
         if: env.SKIP_BUILD != 'true'
         run: |
