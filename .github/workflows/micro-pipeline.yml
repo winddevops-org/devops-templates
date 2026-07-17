@@ -104,7 +104,6 @@ jobs:
           HAS_GO=false
           HAS_ANGULAR=false
           JAVA_VERSION="17"
-          HAS_TESTS=false
 
           if [ -f "${{ env.SERVICE_PATH }}/pom.xml" ]; then
             HAS_MAVEN=true
@@ -115,10 +114,6 @@ jobs:
             elif grep -q "mysql" "${{ env.SERVICE_PATH }}/pom.xml"; then DB_TYPE="mysql"
             elif grep -q "mongo" "${{ env.SERVICE_PATH }}/pom.xml"; then DB_TYPE="mongodb"
             fi
-            
-            if [ -d "${{ env.SERVICE_PATH }}/src/test/java" ] || [ -d "${{ env.SERVICE_PATH }}/src/test/groovy" ]; then
-              HAS_TESTS=true
-            fi
           fi
 
           if [ -f "${{ env.SERVICE_PATH }}/requirements.txt" ]; then
@@ -128,9 +123,6 @@ jobs:
             elif grep -q "pymongo" "${{ env.SERVICE_PATH }}/requirements.txt"; then
               DB_TYPE="mongodb"
             fi
-            if [ -d "${{ env.SERVICE_PATH }}/tests" ] || [ -d "${{ env.SERVICE_PATH }}/test" ]; then
-              HAS_TESTS=true
-            fi
           fi
 
           if [ -f "${{ env.SERVICE_PATH }}/go.mod" ]; then
@@ -139,15 +131,9 @@ jobs:
             elif grep -q "mysql" "${{ env.SERVICE_PATH }}/go.mod"; then DB_TYPE="mysql"
             elif grep -q "mongo" "${{ env.SERVICE_PATH }}/go.mod"; then DB_TYPE="mongodb"
             fi
-            HAS_TESTS=true
           fi
 
-          if [ -f "${{ env.SERVICE_PATH }}/package.json" ]; then
-            if [ -d "${{ env.SERVICE_PATH }}/src" ] || [ -f "${{ env.SERVICE_PATH }}/angular.json" ]; then
-              HAS_ANGULAR=true
-              HAS_TESTS=true
-            fi
-          fi
+          [ -f "${{ env.SERVICE_PATH }}/angular.json" ] && HAS_ANGULAR=true
 
           echo "HAS_MAVEN=${HAS_MAVEN}" >> "$GITHUB_ENV"
           echo "HAS_PYTHON=${HAS_PYTHON}" >> "$GITHUB_ENV"
@@ -155,10 +141,9 @@ jobs:
           echo "HAS_ANGULAR=${HAS_ANGULAR}" >> "$GITHUB_ENV"
           echo "JAVA_VERSION=${JAVA_VERSION}" >> "$GITHUB_ENV"
           echo "DB_TYPE=${DB_TYPE}" >> "$GITHUB_ENV"
-          echo "HAS_TESTS=${HAS_TESTS}" >> "$GITHUB_ENV"
 
       - name: Start database container
-        if: env.SKIP_BUILD != 'true' && env.DB_TYPE != 'none' && env.HAS_TESTS == 'true'
+        if: env.SKIP_BUILD != 'true' && env.DB_TYPE != 'none'
         run: |
           DB_PORT=$((5432 + RANDOM % 1000))
           echo "DB_PORT=${DB_PORT}" >> "$GITHUB_ENV"
@@ -182,82 +167,55 @@ jobs:
             sleep 10
           fi
 
-      - name: Create test profile configuration
-        if: env.HAS_MAVEN == 'true' && env.HAS_TESTS == 'true' && env.SKIP_BUILD != 'true'
+      - name: Run Java tests
+        if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
         run: |
-          TEST_RESOURCES="${{ env.SERVICE_PATH }}/src/test/resources"
-          mkdir -p "${TEST_RESOURCES}"
-          
-          cat > "${TEST_RESOURCES}/application-test.yml" << EOF
-          spring:
-            cloud:
-              config:
-                enabled: false
-              discovery:
-                enabled: false
-            mail:
-              host: localhost
-              port: 25
-              username: test
-              password: test
-            datasource:
-              url: jdbc:postgresql://localhost:${{ env.DB_PORT }}/testdb
-              username: testuser
-              password: testpass
-              driver-class-name: org.postgresql.Driver
-            jpa:
-              hibernate:
-                ddl-auto: create-drop
-          eureka:
-            client:
-              enabled: false
-          management:
-            health:
-              mail:
-                enabled: false
-          EOF
+          MAVEN_CACHE_DIR=$(mktemp -d)
+          docker run --rm --network host \
+            -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
+            -v "${MAVEN_CACHE_DIR}:/root/.m2" \
+            -w /app \
+            192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
+            mvn test -B \
+              -Dspring.profiles.active=test,native \
+              -Dspring.cloud.config.enabled=false \
+              -Dspring.cloud.discovery.enabled=false \
+              -Deureka.client.enabled=false \
+              -Dspring.mail.host=localhost \
+              -Dspring.mail.port=25 \
+              -Dmanagement.health.mail.enabled=false \
+              -Dspring.datasource.url=jdbc:postgresql://localhost:${{ env.DB_PORT }}/testdb \
+              -Dspring.datasource.username=testuser \
+              -Dspring.datasource.password=testpass \
+              -Djwt.secret=ci-secret-key-for-testing-purposes-only-1234567890 \
+              -Djwt.expiration=3600000 || true
 
-      - name: Run tests
-        if: env.SKIP_BUILD != 'true' && env.HAS_TESTS == 'true'
-        continue-on-error: true
+      - name: Run Python tests
+        if: env.HAS_PYTHON == 'true' && env.SKIP_BUILD != 'true'
         run: |
-          if [ "${{ env.HAS_MAVEN }}" = "true" ]; then
-            MAVEN_CACHE_DIR=$(mktemp -d)
-            docker run --rm --network host \
-              -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
-              -v "${MAVEN_CACHE_DIR}:/root/.m2" \
-              -w /app \
-              192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
-              mvn test -B \
-                -Dspring.profiles.active=test \
-                -Dspring.cloud.config.enabled=false \
-                -Dspring.cloud.discovery.enabled=false \
-                -Deureka.client.enabled=false \
-                -Dspring.mail.host=localhost \
-                -Dspring.mail.port=25 \
-                -Dmanagement.health.mail.enabled=false \
-                -Dspring.datasource.url=jdbc:postgresql://localhost:${{ env.DB_PORT }}/testdb \
-                -Dspring.datasource.username=testuser \
-                -Dspring.datasource.password=testpass || echo "Tests failed but continuing"
-          elif [ "${{ env.HAS_PYTHON }}" = "true" ]; then
-            docker run --rm --network host \
-              -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
-              -w /app \
-              192.168.1.239:8085/selfkhaoula/python:3.11-slim \
-              sh -c "pip install -r requirements.txt -q && pytest --tb=short" || echo "Tests failed but continuing"
-          elif [ "${{ env.HAS_GO }}" = "true" ]; then
-            docker run --rm --network host \
-              -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
-              -w /app \
-              192.168.1.239:8085/selfkhaoula/golang:1.22-alpine \
-              go test ./... -v || echo "Tests failed but continuing"
-          elif [ "${{ env.HAS_ANGULAR }}" = "true" ]; then
-            docker run --rm \
-              -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
-              -w /app \
-              192.168.1.239:8085/selfkhaoula/node:20-browsers \
-              npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox || echo "Tests failed but continuing"
-          fi
+          docker run --rm --network host \
+            -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
+            -w /app \
+            192.168.1.239:8085/selfkhaoula/python:3.11-slim \
+            sh -c "pip install -r requirements.txt -q && pytest --tb=short" || true
+
+      - name: Run Go tests
+        if: env.HAS_GO == 'true' && env.SKIP_BUILD != 'true'
+        run: |
+          docker run --rm --network host \
+            -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
+            -w /app \
+            192.168.1.239:8085/selfkhaoula/golang:1.22-alpine \
+            go test ./... -v || true
+
+      - name: Run Angular tests
+        if: env.HAS_ANGULAR == 'true' && env.SKIP_BUILD != 'true'
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
+            -w /app \
+            192.168.1.239:8085/selfkhaoula/node:20-browsers \
+            npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox || true
 
       - name: Build Docker image
         if: env.SKIP_BUILD != 'true'
@@ -270,9 +228,7 @@ jobs:
       - name: Security scan
         if: env.SKIP_BUILD != 'true'
         run: |
-          trivy image --severity HIGH,CRITICAL --exit-code 1 "${{ env.IMAGE }}" || {
-            echo "Vulnerabilities detected but build continued"
-          }
+          trivy image --severity HIGH,CRITICAL --exit-code 0 "${{ env.IMAGE }}"
 
       - name: Smoke test
         if: env.SKIP_BUILD != 'true'
