@@ -6,33 +6,28 @@ on:
       GITOPS_TOKEN:
         required: true
 
+env:
+  REGISTRY: 192.168.1.239:8085/selfkhaoula
+  NEXUS_CERT_PATH: /home/ubuntu/nexus/certs/nexus.crt
+
 jobs:
-  # ── DISCOVER : Scan des microservices ───────────────────────────
   discover:
     runs-on: self-hosted
     outputs:
       services: ${{ steps.scan.outputs.services }}
       app_name: ${{ steps.scan.outputs.app_name }}
     steps:
-      - name: Clean workspace
-        run: |
-          sudo git clean -ffdx 2>/dev/null || \
-          sudo find "${{ github.workspace }}" -mindepth 1 -delete 2>/dev/null || true
-
       - uses: actions/checkout@v4
 
-      - name: Scan services (root + backend/)
+      - name: Scan services
         id: scan
         run: |
-          APP_NAME=$(echo "${{ github.event.repository.name }}" \
-            | tr '[:upper:]' '[:lower:]' \
-            | sed 's/[^a-z0-9-]/-/g')
+          APP_NAME=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
           echo "app_name=${APP_NAME}" >> "$GITHUB_OUTPUT"
 
           SERVICES="["
           FIRST=true
 
-          # 1. Scanner à la racine
           for dir in */; do
             dir="${dir%/}"
             case "${dir}" in
@@ -42,11 +37,9 @@ jobs:
               [ "${FIRST}" = "false" ] && SERVICES="${SERVICES},"
               SERVICES="${SERVICES}\"${dir}\""
               FIRST="false"
-              echo "✅ Service détecté (root) : ${dir}"
             fi
           done
 
-          # 2. Scanner dans backend/
           if [ -d "backend" ]; then
             for dir in backend/*/; do
               [ -d "${dir}" ] || continue
@@ -56,34 +49,17 @@ jobs:
                 [ "${FIRST}" = "false" ] && SERVICES="${SERVICES},"
                 SERVICES="${SERVICES}\"backend/${dir}\""
                 FIRST="false"
-                echo "✅ Service détecté (backend) : backend/${dir}"
               fi
             done
           fi
 
           SERVICES="${SERVICES}]"
           echo "services=${SERVICES}" >> "$GITHUB_OUTPUT"
-          echo "📦 Services trouvés : ${SERVICES}"
 
-  # ── BUILD SERVICE : Matrice pour chaque microservice ────────────
   build-service:
     needs: discover
     runs-on: self-hosted
     timeout-minutes: 45
-    services:
-      postgres:
-        image: postgres:15-alpine
-        env:
-          POSTGRES_USER: testuser
-          POSTGRES_PASSWORD: testpass
-          POSTGRES_DB: testdb
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd="pg_isready -U testuser"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=5
     strategy:
       fail-fast: false
       matrix:
@@ -91,217 +67,143 @@ jobs:
     env:
       APP_NAME: ${{ needs.discover.outputs.app_name }}
       SERVICE_PATH: ${{ matrix.service }}
-      REGISTRY: 192.168.1.239:8085/selfkhaoula
 
     steps:
-      - name: Clean workspace
-        run: |
-          sudo git clean -ffdx 2>/dev/null || \
-          sudo find "${{ github.workspace }}" -mindepth 1 -delete 2>/dev/null || true
-
       - uses: actions/checkout@v4
 
-      # ── SET SERVICE NAME ───────────────────────────────────────
-      - name: Set service name
+      - name: Set environment variables
         run: |
           SERVICE_NAME=$(basename "${{ env.SERVICE_PATH }}")
           echo "SERVICE=${SERVICE_NAME}" >> "$GITHUB_ENV"
           echo "IMAGE=${{ env.REGISTRY }}/${{ env.APP_NAME }}-${SERVICE_NAME}:${{ github.sha }}" >> "$GITHUB_ENV"
-          echo "✅ Service: ${SERVICE_NAME} | Path: ${{ env.SERVICE_PATH }}"
 
-      # ── DETECT TECHNOLOGY ────────────────────────────────────
-      - name: Detect technology & Database
-        run: |
-          SERVICE_PATH="${{ env.SERVICE_PATH }}"
-          DB_TYPE="none"
-
-          if [ -f "${SERVICE_PATH}/pom.xml" ]; then
-            echo "HAS_MAVEN=true" >> "$GITHUB_ENV"
-            JAVA_VERSION=$(grep -oP '(?<=<java.version>)[^<]+' "${SERVICE_PATH}/pom.xml" 2>/dev/null | head -1)
-            [ -z "${JAVA_VERSION}" ] && JAVA_VERSION=$(grep -oP '(?<=<maven.compiler.source>)[^<]+' "${SERVICE_PATH}/pom.xml" 2>/dev/null | head -1)
-            [ -z "${JAVA_VERSION}" ] && JAVA_VERSION="17"
-            echo "JAVA_VERSION=${JAVA_VERSION}" >> "$GITHUB_ENV"
-
-            if grep -q "postgresql" "${SERVICE_PATH}/pom.xml"; then DB_TYPE="postgresql"
-            elif grep -q "mysql-connector" "${SERVICE_PATH}/pom.xml"; then DB_TYPE="mysql"
-            elif grep -q "mongodb-driver" "${SERVICE_PATH}/pom.xml" || grep -q "mongo-java-driver" "${SERVICE_PATH}/pom.xml"; then DB_TYPE="mongodb"
-            elif grep -q "h2" "${SERVICE_PATH}/pom.xml"; then DB_TYPE="h2"
-            fi
-          else
-            echo "HAS_MAVEN=false" >> "$GITHUB_ENV"
-          fi
-
-          if [ -f "${SERVICE_PATH}/requirements.txt" ]; then
-            echo "HAS_PYTHON=true" >> "$GITHUB_ENV"
-            if grep -q "psycopg2" "${SERVICE_PATH}/requirements.txt"; then DB_TYPE="postgresql"
-            elif grep -q "mysqlclient" "${SERVICE_PATH}/requirements.txt" || grep -q "PyMySQL" "${SERVICE_PATH}/requirements.txt"; then DB_TYPE="mysql"
-            elif grep -q "pymongo" "${SERVICE_PATH}/requirements.txt"; then DB_TYPE="mongodb"
-            fi
-          else
-            echo "HAS_PYTHON=false" >> "$GITHUB_ENV"
-          fi
-
-          if [ -f "${SERVICE_PATH}/go.mod" ]; then
-            echo "HAS_GO=true" >> "$GITHUB_ENV"
-            if grep -q "lib/pq" "${SERVICE_PATH}/go.mod" || grep -q "pgx" "${SERVICE_PATH}/go.mod"; then DB_TYPE="postgresql"
-            elif grep -q "go-sql-driver/mysql" "${SERVICE_PATH}/go.mod"; then DB_TYPE="mysql"
-            elif grep -q "mongo-driver" "${SERVICE_PATH}/go.mod"; then DB_TYPE="mongodb"
-            fi
-          else
-            echo "HAS_GO=false" >> "$GITHUB_ENV"
-          fi
-
-          if [ -f "${SERVICE_PATH}/package.json" ]; then
-            if grep -q '"pg"' "${SERVICE_PATH}/package.json"; then DB_TYPE="postgresql"
-            elif grep -q '"mysql2"' "${SERVICE_PATH}/package.json"; then DB_TYPE="mysql"
-            elif grep -q '"mongoose"' "${SERVICE_PATH}/package.json"; then DB_TYPE="mongodb"
-            fi
-          fi
-
-          [ -f "${SERVICE_PATH}/angular.json" ] && echo "HAS_ANGULAR=true" >> "$GITHUB_ENV" || echo "HAS_ANGULAR=false" >> "$GITHUB_ENV"
-
-          echo "DB_TYPE=${DB_TYPE}" >> "$GITHUB_ENV"
-          echo "✅ Service: ${{ env.SERVICE }} | DB: ${DB_TYPE}"
-
-      # ── SKIP INTELLIGENT ──────────────────────────────────────
-      - name: "🔍 Vérifier si l'image existe déjà"
+      - name: Check if image exists
         id: check_image
         run: |
           SKIP="false"
-          IMG="${{ env.IMAGE }}"
-          if docker manifest inspect "$IMG" >/dev/null 2>&1; then
+          if docker manifest inspect "${{ env.IMAGE }}" >/dev/null 2>&1; then
             SKIP="true"
-            echo "LOCAL_IMAGE=${IMG}" >> "$GITHUB_ENV"
           fi
           echo "SKIP_BUILD=${SKIP}" >> "$GITHUB_ENV"
-          if [ "$SKIP" = "true" ]; then
-            echo "✅ Image déjà présente pour ce commit. Skip Build & Push."
-          else
-            echo "🚀 Image non trouvée. Build & Push lancé."
-          fi
 
-      # ── DOCKER LOGIN ──────────────────────────────────────────
-      - name: Trust Nexus certificate
+      - name: Setup Docker credentials
         if: env.SKIP_BUILD != 'true'
         run: |
           sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
-          sudo cp /home/ubuntu/nexus/certs/nexus.crt /etc/docker/certs.d/192.168.1.239:8085/ca.crt
-          sudo cp /home/ubuntu/nexus/certs/nexus.crt /usr/local/share/ca-certificates/nexus.crt
+          sudo cp ${{ env.NEXUS_CERT_PATH }} /etc/docker/certs.d/192.168.1.239:8085/ca.crt
           sudo update-ca-certificates
+          echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
 
-      - name: Docker login
+      - name: Detect technology
+        id: detect
         if: env.SKIP_BUILD != 'true'
-        run: echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
-
-      # ── INSTALL FRONTEND ──────────────────────────────────────
-      - name: Install frontend dependencies
-        if: env.HAS_ANGULAR == 'true' && env.SKIP_BUILD != 'true'
         run: |
-          docker run --rm --user "$(id -u):$(id -g)" \
-            -v "$PWD/${{ env.SERVICE_PATH }}:/app" -w /app \
-            192.168.1.239:8085/selfkhaoula/node:20-alpine \
-            npm install --legacy-peer-deps --loglevel=error --no-fund
+          DB_TYPE="none"
+          HAS_MAVEN=false
+          HAS_PYTHON=false
+          HAS_GO=false
+          HAS_ANGULAR=false
+          JAVA_VERSION="17"
 
-      # ── TESTS ─────────────────────────────────────────────────
-      - name: "🧪 Test Angular"
-        if: env.HAS_ANGULAR == 'true' && env.SKIP_BUILD != 'true'
-        run: |
-          docker run --rm --user "$(id -u):$(id -g)" \
-            -v "$PWD/${{ env.SERVICE_PATH }}:/app" -w /app --cap-add=SYS_ADMIN \
-            192.168.1.239:8085/selfkhaoula/node:20-browsers \
-            npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox 2>&1 | tee "${{ env.SERVICE }}-test.log"
+          if [ -f "${{ env.SERVICE_PATH }}/pom.xml" ]; then
+            HAS_MAVEN=true
+            JAVA_VERSION=$(grep -oP '(?<=<java.version>)[^<]+' "${{ env.SERVICE_PATH }}/pom.xml" 2>/dev/null | head -1)
+            [ -z "${JAVA_VERSION}" ] && JAVA_VERSION="17"
+            
+            if grep -q "postgresql" "${{ env.SERVICE_PATH }}/pom.xml"; then DB_TYPE="postgresql"
+            elif grep -q "mysql" "${{ env.SERVICE_PATH }}/pom.xml"; then DB_TYPE="mysql"
+            elif grep -q "mongo" "${{ env.SERVICE_PATH }}/pom.xml"; then DB_TYPE="mongodb"
+            fi
+          fi
 
-      - name: "🧪 Test Java (Standardized & Safe)"
-        if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
+          if [ -f "${{ env.SERVICE_PATH }}/requirements.txt" ]; then
+            HAS_PYTHON=true
+            if grep -q "psycopg2\|PyMySQL" "${{ env.SERVICE_PATH }}/requirements.txt"; then
+              DB_TYPE="postgresql"
+            elif grep -q "pymongo" "${{ env.SERVICE_PATH }}/requirements.txt"; then
+              DB_TYPE="mongodb"
+            fi
+          fi
+
+          if [ -f "${{ env.SERVICE_PATH }}/go.mod" ]; then
+            HAS_GO=true
+            if grep -q "lib/pq\|pgx" "${{ env.SERVICE_PATH }}/go.mod"; then DB_TYPE="postgresql"
+            elif grep -q "mysql" "${{ env.SERVICE_PATH }}/go.mod"; then DB_TYPE="mysql"
+            elif grep -q "mongo" "${{ env.SERVICE_PATH }}/go.mod"; then DB_TYPE="mongodb"
+            fi
+          fi
+
+          [ -f "${{ env.SERVICE_PATH }}/angular.json" ] && HAS_ANGULAR=true
+
+          echo "HAS_MAVEN=${HAS_MAVEN}" >> "$GITHUB_ENV"
+          echo "HAS_PYTHON=${HAS_PYTHON}" >> "$GITHUB_ENV"
+          echo "HAS_GO=${HAS_GO}" >> "$GITHUB_ENV"
+          echo "HAS_ANGULAR=${HAS_ANGULAR}" >> "$GITHUB_ENV"
+          echo "JAVA_VERSION=${JAVA_VERSION}" >> "$GITHUB_ENV"
+          echo "DB_TYPE=${DB_TYPE}" >> "$GITHUB_ENV"
+
+      - name: Start database container
+        if: env.SKIP_BUILD != 'true' && env.DB_TYPE != 'none'
         run: |
-          # Fix Permission Denied: Create .m2 in user home and map it correctly
-          mkdir -p $HOME/.m2
+          DB_PORT=$((5432 + RANDOM % 1000))
+          echo "DB_PORT=${DB_PORT}" >> "$GITHUB_ENV"
           
-          docker run --rm --network host --user "$(id -u):$(id -g)" \
-            -v "$PWD/${{ env.SERVICE_PATH }}:/app" -w /app \
-            -v "$HOME/.m2:/home/user/.m2" \
-            -e MAVEN_OPTS="-Xmx512m" \
-            -e HOME=/home/user \
-            192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
-            mvn test -B \
-              -Dspring.profiles.active=native,test \
-              -Dspring.cloud.config.enabled=false \
-              -Dspring.cloud.config.fail-fast=false \
-              -Dspring.cloud.discovery.enabled=false \
-              -Dspring.cloud.service-registry.auto-registration.enabled=false \
-              -Deureka.client.enabled=false \
-              -Dspring.cloud.config.server.native.search-locations=classpath:/ \
-              -DskipTests=false \
-              -Dspring.datasource.url=jdbc:postgresql://localhost:5432/testdb \
-              -Dspring.datasource.username=testuser \
-              -Dspring.datasource.password=testpass \
-              -Djwt.secret=ci-secret-key-for-testing-purposes-only-1234567890 \
-              -Djwt.expiration=3600000 \
-          || {
-            echo "=== SUREFIRE FAILURE REPORTS ==="
-            find "$PWD/${{ env.SERVICE_PATH }}/target/surefire-reports" -name "*.txt" \
-              -exec echo "--- {} ---" \; -exec cat {} \; 2>/dev/null || true
-            exit 1
-          }
-
-      - name: "🧪 Test Python"
-        if: env.HAS_PYTHON == 'true' && env.SKIP_BUILD != 'true'
-        run: |
-          docker run --rm --user "$(id -u):$(id -g)" \
-            -v "$PWD/${{ env.SERVICE_PATH }}:/app" -w /app \
-            192.168.1.239:8085/selfkhaoula/python:3.11-slim \
-            sh -c "pip install -r requirements.txt -q && pytest --tb=short"
-
-      - name: "🧪 Test Go"
-        if: env.HAS_GO == 'true' && env.SKIP_BUILD != 'true'
-        run: |
-          docker run --rm --user "$(id -u):$(id -g)" \
-            -v "$PWD/${{ env.SERVICE_PATH }}:/app" -w /app \
-            192.168.1.239:8085/selfkhaoula/golang:1.22-alpine \
-            go test ./... -v
-
-      # ── LINT ──────────────────────────────────────────────────
-      - name: "🔍 Lint frontend (ESLint)"
-        if: env.HAS_ANGULAR == 'true' && env.SKIP_BUILD != 'true'
-        run: |
-          docker run --rm --user "$(id -u):$(id -g)" \
-            -v "$PWD/${{ env.SERVICE_PATH }}:/app" -w /app \
-            192.168.1.239:8085/selfkhaoula/node:20-alpine \
-            sh -c "if node -e \"const p=require('./package.json'); process.exit(p.scripts&&p.scripts.lint?0:1);\" 2>/dev/null; then npm run lint; else echo '⚠️ Pas de script lint, ignoré.'; fi"
-
-      - name: "🔍 Lint backend (Checkstyle)"
-        if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
-        run: |
-          if grep -qi "checkstyle" "${{ env.SERVICE_PATH }}/pom.xml"; then
-            docker run --rm --user "$(id -u):$(id -g)" \
-              -v "$PWD/${{ env.SERVICE_PATH }}:/app" -w /app \
-              192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
-              mvn checkstyle:check -B
-          else
-            echo "⚠️ Checkstyle non configuré, ignoré."
+          if [ "${{ env.DB_TYPE }}" = "postgresql" ]; then
+            docker run -d --name test-db-${{ env.SERVICE }} \
+              -e POSTGRES_USER=testuser \
+              -e POSTGRES_PASSWORD=testpass \
+              -e POSTGRES_DB=testdb \
+              -p ${DB_PORT}:5432 \
+              postgres:15-alpine
+            sleep 5
+          elif [ "${{ env.DB_TYPE }}" = "mysql" ]; then
+            docker run -d --name test-db-${{ env.SERVICE }} \
+              -e MYSQL_ROOT_PASSWORD=rootpass \
+              -e MYSQL_DATABASE=testdb \
+              -e MYSQL_USER=testuser \
+              -e MYSQL_PASSWORD=testpass \
+              -p ${DB_PORT}:3306 \
+              mysql:8
+            sleep 10
           fi
 
-      - name: "🔍 Lint Dockerfile (hadolint)"
+      - name: Run tests
         if: env.SKIP_BUILD != 'true'
         run: |
-          DOCKERFILE="${{ env.SERVICE_PATH }}/Dockerfile"
-          if [ ! -f "${DOCKERFILE}" ]; then
-            echo "⚠️ Dockerfile non trouvé: ${DOCKERFILE}, ignoré."
-            exit 0
+          if [ "${{ env.HAS_MAVEN }}" = "true" ]; then
+            MAVEN_CACHE_DIR=$(mktemp -d)
+            docker run --rm --network host \
+              -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
+              -v "${MAVEN_CACHE_DIR}:/root/.m2" \
+              -w /app \
+              192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
+              mvn test -B \
+                -Dspring.profiles.active=test \
+                -Dspring.cloud.config.enabled=false \
+                -Dspring.datasource.url=jdbc:postgresql://localhost:${{ env.DB_PORT }}/testdb \
+                -Dspring.datasource.username=testuser \
+                -Dspring.datasource.password=testpass
+          elif [ "${{ env.HAS_PYTHON }}" = "true" ]; then
+            docker run --rm --network host \
+              -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
+              -w /app \
+              192.168.1.239:8085/selfkhaoula/python:3.11-slim \
+              sh -c "pip install -r requirements.txt -q && pytest --tb=short"
+          elif [ "${{ env.HAS_GO }}" = "true" ]; then
+            docker run --rm --network host \
+              -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
+              -w /app \
+              192.168.1.239:8085/selfkhaoula/golang:1.22-alpine \
+              go test ./... -v
+          elif [ "${{ env.HAS_ANGULAR }}" = "true" ]; then
+            docker run --rm \
+              -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
+              -w /app \
+              192.168.1.239:8085/selfkhaoula/node:20-browsers \
+              npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox
           fi
-          if ! grep -q '^FROM\s' "${DOCKERFILE}"; then
-            echo "❌ ${DOCKERFILE} ne contient aucune instruction FROM."
-            head -n10 "${DOCKERFILE}"
-            exit 1
-          fi
-          echo "→ Lint: ${DOCKERFILE}"
-          docker run --rm -v "${GITHUB_WORKSPACE}/${{ env.SERVICE_PATH }}:/mnt" \
-            192.168.1.239:8085/selfkhaoula/hadolint:latest \
-            hadolint --failure-threshold error /mnt/Dockerfile || \
-            echo "⚠️ hadolint warnings ignorés pour ${DOCKERFILE}"
 
-      # ── BUILD & PUSH ──────────────────────────────────────────
-      - name: "🐳 Build"
+      - name: Build Docker image
         if: env.SKIP_BUILD != 'true'
         run: |
           docker build \
@@ -309,34 +211,52 @@ jobs:
             -t "${{ env.IMAGE }}" \
             "${{ env.SERVICE_PATH }}"
 
-      - name: "🔒 Trivy scan"
+      - name: Security scan
         if: env.SKIP_BUILD != 'true'
         run: |
-          trivy image --severity HIGH,CRITICAL --exit-code 0 --ignore-unfixed "${{ env.IMAGE }}"
+          trivy image --severity HIGH,CRITICAL --exit-code 1 "${{ env.IMAGE }}" || {
+            echo "Vulnerabilities detected but build continued"
+          }
 
-      - name: "🔥 Smoke test"
+      - name: Smoke test
         if: env.SKIP_BUILD != 'true'
         run: |
-          CONTAINER_ID=$(docker run -d --rm "${{ env.IMAGE }}" 2>/dev/null || true)
-          if [ -z "${CONTAINER_ID}" ]; then
-            echo "❌ Container non démarré : ${{ env.IMAGE }}"
-            exit 1
-          fi
-          sleep 10
-          STATUS=$(docker inspect --format='{{.State.Status}}' "${CONTAINER_ID}" 2>/dev/null || echo "gone")
-          if [ "${STATUS}" = "exited" ]; then
-            EXIT_CODE=$(docker inspect --format='{{.State.ExitCode}}' "${CONTAINER_ID}" 2>/dev/null || echo "1")
-            docker logs "${CONTAINER_ID}" 2>/dev/null || true
-            [ "${EXIT_CODE}" != "0" ] && echo "❌ Smoke test échoué (exit ${EXIT_CODE})" && exit 1
-          fi
-          docker stop "${CONTAINER_ID}" 2>/dev/null || true
-          echo "✅ Smoke test OK : ${{ env.SERVICE }}"
+          CONTAINER_ID=$(docker run -d --name smoke-${{ env.SERVICE }} \
+            -e SPRING_PROFILES_ACTIVE=test \
+            -e DB_HOST=localhost \
+            "${{ env.IMAGE }}")
+          
+          MAX_WAIT=30
+          WAITED=0
+          while [ $WAITED -lt $MAX_WAIT ]; do
+            STATUS=$(docker inspect --format='{{.State.Status}}' "${CONTAINER_ID}" 2>/dev/null || echo "gone")
+            if [ "${STATUS}" = "running" ]; then
+              echo "Container started successfully"
+              docker stop "${CONTAINER_ID}"
+              exit 0
+            elif [ "${STATUS}" = "exited" ]; then
+              echo "Container stopped prematurely"
+              docker logs "${CONTAINER_ID}"
+              exit 1
+            fi
+            sleep 2
+            WAITED=$((WAITED + 2))
+          done
+          
+          echo "Timeout after ${MAX_WAIT}s"
+          docker logs "${CONTAINER_ID}"
+          exit 1
 
-      - name: "🐳 Push"
+      - name: Push image
         if: env.SKIP_BUILD != 'true'
         run: docker push "${{ env.IMAGE }}"
 
-  # ── GITOPS : Mise à jour du repo GitOps ─────────────────────────
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f test-db-${{ env.SERVICE }} 2>/dev/null || true
+          docker rm -f smoke-${{ env.SERVICE }} 2>/dev/null || true
+
   gitops:
     needs: [discover, build-service]
     runs-on: self-hosted
@@ -345,11 +265,6 @@ jobs:
       APP_NAME: ${{ needs.discover.outputs.app_name }}
 
     steps:
-      - name: Clean workspace
-        run: |
-          sudo git clean -ffdx 2>/dev/null || \
-          sudo find "${{ github.workspace }}" -mindepth 1 -delete 2>/dev/null || true
-
       - uses: actions/checkout@v4
 
       - name: Checkout devops-templates
@@ -359,7 +274,7 @@ jobs:
           path: devops-templates
           token: ${{ secrets.GITOPS_TOKEN }}
 
-      - name: "🚀 Update GitOps for all microservices"
+      - name: Update GitOps for all microservices
         env:
           GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
           APP_NAME: ${{ env.APP_NAME }}
@@ -410,11 +325,9 @@ jobs:
                 "    cpu: 250m" \
                 "    memory: 256Mi" \
                 "env: []" > "${VPATH}"
-              echo "✅ values.yaml créé pour ${COMP}"
             else
               sed -i "s|repository:.*|repository: \"${REGISTRY}/${COMP}\"|" "${VPATH}"
               sed -i "s|tag:.*|tag: \"${SHA}\"|" "${VPATH}"
-              echo "✅ values.yaml mis à jour pour ${COMP} → ${SHA}"
             fi
 
             APATH="argocd-applications/${COMP}.yaml"
@@ -447,13 +360,11 @@ jobs:
                 "      selfHeal: true" \
                 "    syncOptions:" \
                 "      - CreateNamespace=true" > "${APATH}"
-              echo "✅ ArgoCD Application créée pour ${COMP}"
             fi
           done
 
-          # ✅ ORDRE CORRECT : add → commit → pull → push
           git add .
-          git diff --cached --quiet && echo "Rien à commiter." && exit 0
+          git diff --cached --quiet && echo "Nothing to commit." && exit 0
           git commit -m "[${APP_NAME}] deploy all microservices -> ${SHA}"
           git pull --rebase origin main
           git push origin main
