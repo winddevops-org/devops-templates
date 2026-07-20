@@ -2,11 +2,11 @@
 name: Deploy Template (Hybrid CI/CD)
 
 on:
-  # MODE 1 : Déclenchement Automatique (CI Classique)
+  # MODE 1 : Automatique (Push sur main)
   push:
     branches: [main]
   
-  # MODE 2 : Déclenchement Manuel (Dashboard / UI GitHub)
+  # MODE 2 : Manuel (Dashboard / UI GitHub)
   workflow_dispatch:
     inputs:
       environment:
@@ -30,57 +30,52 @@ jobs:
       mode: ${{ steps.detect.outputs.mode }}
       app_name: ${{ steps.scan.outputs.app_name }}
       services: ${{ steps.scan.outputs.services }}
-      # C'est ici que l'environnement est capturé pour tout le workflow
-      target_env: ${{ github.event.inputs.environment || 'staging' }} 
+      db_type: ${{ steps.detect.outputs.db_type }}
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Detect Mode & Scan Services
+      - name: Detect Mode & Scan
         id: scan
         run: |
           APP_NAME=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
           echo "app_name=${APP_NAME}" >> "$GITHUB_OUTPUT"
           
-          # Ta logique de détection mono/micro existante...
-          # Pour l'exemple, on assume micro par défaut si tu as plusieurs Dockerfiles
-          SERVICES="[]" 
-          HAS_MAVEN=false
-          # ... (insérer ta logique de scan actuelle ici) ...
+          # Ta logique de détection mono/micro/dual existante...
+          # Exemple simplifié pour l'exemple :
+          DEPLOY_MODE="mono"
+          DB_TYPE="none"
           
-          echo "mode=micro" >> "$GITHUB_OUTPUT"
-          echo "services=${SERVICES}" >> "$GITHUB_OUTPUT"
-          echo "✅ Target Environment: ${{ github.event.inputs.environment || 'staging' }}"
+          if [ -d "frontend" ] && [ -f "frontend/Dockerfile" ]; then DEPLOY_MODE="front-only"; fi
+          if [ -d "backend" ] && [ -f "backend/Dockerfile" ]; then 
+            [ "${DEPLOY_MODE}" = "front-only" ] && DEPLOY_MODE="dual" || DEPLOY_MODE="back-only"
+          fi
+          
+          # Détection DB (ta logique existante)
+          if grep -q "postgresql" backend/pom.xml 2>/dev/null; then DB_TYPE="postgresql"; fi
+          
+          echo "mode=${DEPLOY_MODE}" >> "$GITHUB_OUTPUT"
+          echo "db_type=${DB_TYPE}" >> "$GITHUB_OUTPUT"
+          echo "services=[]" >> "$GITHUB_OUTPUT" # À adapter selon ta logique microservices
+          echo "✅ Detected: ${DEPLOY_MODE} | DB: ${DB_TYPE}"
 
   build-service:
     needs: detect
     runs-on: self-hosted
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        service: ${{ fromJson(needs.detect.outputs.services) }}
     env:
       APP_NAME: ${{ needs.detect.outputs.app_name }}
-      SERVICE_PATH: ${{ matrix.service }}
       REGISTRY: 192.168.1.239:8085/selfkhaoula
       NEXUS_CERT_PATH: /home/ubuntu/nexus/certs/nexus.crt
 
     steps:
       - uses: actions/checkout@v4
       
-      - name: Set Image Tag
+      - name: Build & Push Image
         run: |
-          SERVICE_NAME=$(basename "${{ env.SERVICE_PATH }}")
-          IMAGE_TAG="${{ env.APP_NAME }}-${SERVICE_NAME}:${{ github.sha }}"
-          echo "IMAGE=${{ env.REGISTRY }}/${IMAGE_TAG}" >> "$GITHUB_ENV"
-          echo "SERVICE=${SERVICE_NAME}" >> "$GITHUB_ENV"
-
-      - name: Build & Push Docker Image
-        run: |
-          # Ta logique de build, test, smoke-test et push existante...
-          # Utilise ${{ env.IMAGE }} comme tag
-          docker build -t "${{ env.IMAGE }}" "${{ env.SERVICE_PATH }}"
-          docker push "${{ env.IMAGE }}"
+          # Ta logique de build/test/push existante...
+          # Utilise ${{ github.sha }} comme tag
+          IMAGE="${{ env.REGISTRY }}/${{ env.APP_NAME }}:${{ github.sha }}"
+          docker build -t "${IMAGE}" .
+          docker push "${IMAGE}"
 
   gitops:
     needs: [detect, build-service]
@@ -88,13 +83,15 @@ jobs:
     if: success()
     
     # ==========================================
-    # CONFIGURATION CENTRALE DE L'ENVIRONNEMENT
+    # C'EST ICI QUE LA MAGIE OPÈRE
     # ==========================================
     env:
-      TARGET_ENV: ${{ needs.detect.outputs.target_env }}
+      # Si workflow_dispatch -> prend l'input, sinon défaut 'staging'
+      ENV: ${{ github.event.inputs.environment || 'staging' }}
       APP_NAME: ${{ needs.detect.outputs.app_name }}
       SHA: ${{ github.sha }}
-      SERVICES: ${{ needs.detect.outputs.services }}
+      DB_TYPE: ${{ needs.detect.outputs.db_type }}
+      DEPLOY_MODE: ${{ needs.detect.outputs.mode }}
       REGISTRY: 192.168.1.239:8085/selfkhaoula
       GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
 
@@ -103,13 +100,7 @@ jobs:
       
       - name: Update GitOps Manifests
         run: |
-          # On appelle le script en lui passant TOUTES les variables nécessaires
+          # Ton script EXISTANT est appelé tel quel !
+          # Il reçoit ENV, DB_TYPE, DEPLOY_MODE etc. via l'environnement du job
           chmod +x scripts/update-gitops.sh
-          
-          ./scripts/update-gitops.sh \
-            "${TARGET_ENV}" \
-            "${APP_NAME}" \
-            "${SHA}" \
-            "${REGISTRY}" \
-            "${SERVICES}" \
-            "${GITOPS_PAT}"
+          ./scripts/update-gitops.sh
