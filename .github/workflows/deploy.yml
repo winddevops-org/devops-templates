@@ -1,11 +1,12 @@
-name: Deploy Template (Hybrid)
+# .github/workflows/deploy-template.yml
+name: Deploy Template (Hybrid CI/CD)
 
 on:
-  # 1. Déclenchement Automatique (CI/CD Classique)
+  # MODE 1 : Déclenchement Automatique (CI Classique)
   push:
     branches: [main]
   
-  # 2. Déclenchement Manuel (Depuis Dashboard ou UI GitHub)
+  # MODE 2 : Déclenchement Manuel (Dashboard / UI GitHub)
   workflow_dispatch:
     inputs:
       environment:
@@ -17,7 +18,7 @@ on:
           - staging
           - production
       force_deploy:
-        description: 'Force deploy even if image exists?'
+        description: 'Force rebuild even if image exists?'
         required: false
         default: 'false'
         type: boolean
@@ -27,12 +28,88 @@ jobs:
     runs-on: self-hosted
     outputs:
       mode: ${{ steps.detect.outputs.mode }}
-      env_target: ${{ github.event.inputs.environment || 'staging' }} # Fallback pour push auto
+      app_name: ${{ steps.scan.outputs.app_name }}
+      services: ${{ steps.scan.outputs.services }}
+      # C'est ici que l'environnement est capturé pour tout le workflow
+      target_env: ${{ github.event.inputs.environment || 'staging' }} 
     steps:
-      # ... Ta logique de détection mono/micro actuelle ...
-      # Ajoute juste cette ligne pour passer l'environnement aux jobs suivants
-      - name: Set Environment Target
-        run: echo "env_target=${{ github.event.inputs.environment || 'staging' }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+      
+      - name: Detect Mode & Scan Services
+        id: scan
+        run: |
+          APP_NAME=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+          echo "app_name=${APP_NAME}" >> "$GITHUB_OUTPUT"
+          
+          # Ta logique de détection mono/micro existante...
+          # Pour l'exemple, on assume micro par défaut si tu as plusieurs Dockerfiles
+          SERVICES="[]" 
+          HAS_MAVEN=false
+          # ... (insérer ta logique de scan actuelle ici) ...
+          
+          echo "mode=micro" >> "$GITHUB_OUTPUT"
+          echo "services=${SERVICES}" >> "$GITHUB_OUTPUT"
+          echo "✅ Target Environment: ${{ github.event.inputs.environment || 'staging' }}"
 
-  # Tes jobs mono et micro actuels...
-  # Assure-toi qu'ils reçoivent l'input 'environment' via needs.detect.outputs.env_target
+  build-service:
+    needs: detect
+    runs-on: self-hosted
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(needs.detect.outputs.services) }}
+    env:
+      APP_NAME: ${{ needs.detect.outputs.app_name }}
+      SERVICE_PATH: ${{ matrix.service }}
+      REGISTRY: 192.168.1.239:8085/selfkhaoula
+      NEXUS_CERT_PATH: /home/ubuntu/nexus/certs/nexus.crt
+
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set Image Tag
+        run: |
+          SERVICE_NAME=$(basename "${{ env.SERVICE_PATH }}")
+          IMAGE_TAG="${{ env.APP_NAME }}-${SERVICE_NAME}:${{ github.sha }}"
+          echo "IMAGE=${{ env.REGISTRY }}/${IMAGE_TAG}" >> "$GITHUB_ENV"
+          echo "SERVICE=${SERVICE_NAME}" >> "$GITHUB_ENV"
+
+      - name: Build & Push Docker Image
+        run: |
+          # Ta logique de build, test, smoke-test et push existante...
+          # Utilise ${{ env.IMAGE }} comme tag
+          docker build -t "${{ env.IMAGE }}" "${{ env.SERVICE_PATH }}"
+          docker push "${{ env.IMAGE }}"
+
+  gitops:
+    needs: [detect, build-service]
+    runs-on: self-hosted
+    if: success()
+    
+    # ==========================================
+    # CONFIGURATION CENTRALE DE L'ENVIRONNEMENT
+    # ==========================================
+    env:
+      TARGET_ENV: ${{ needs.detect.outputs.target_env }}
+      APP_NAME: ${{ needs.detect.outputs.app_name }}
+      SHA: ${{ github.sha }}
+      SERVICES: ${{ needs.detect.outputs.services }}
+      REGISTRY: 192.168.1.239:8085/selfkhaoula
+      GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Update GitOps Manifests
+        run: |
+          # On appelle le script en lui passant TOUTES les variables nécessaires
+          chmod +x scripts/update-gitops.sh
+          
+          ./scripts/update-gitops.sh \
+            "${TARGET_ENV}" \
+            "${APP_NAME}" \
+            "${SHA}" \
+            "${REGISTRY}" \
+            "${SERVICES}" \
+            "${GITOPS_PAT}"
