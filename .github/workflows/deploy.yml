@@ -1,81 +1,38 @@
-name: Deploy Template
+name: Deploy Template (Hybrid)
 
 on:
-  workflow_call:
-    secrets:
-      GITOPS_TOKEN:
+  # 1. Déclenchement Automatique (CI/CD Classique)
+  push:
+    branches: [main]
+  
+  # 2. Déclenchement Manuel (Depuis Dashboard ou UI GitHub)
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target Environment'
         required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      force_deploy:
+        description: 'Force deploy even if image exists?'
+        required: false
+        default: 'false'
+        type: boolean
 
 jobs:
   detect:
     runs-on: self-hosted
     outputs:
       mode: ${{ steps.detect.outputs.mode }}
+      env_target: ${{ github.event.inputs.environment || 'staging' }} # Fallback pour push auto
     steps:
-      - name: Clean workspace
-        run: |
-          sudo git clean -ffdx 2>/dev/null || \
-          sudo find "${{ github.workspace }}" -mindepth 1 -delete 2>/dev/null || true
-      - uses: actions/checkout@v4
-      - name: Detect mono vs micro
-        id: detect
-        run: |
-          # Compter les microservices à la racine (ancien pattern)
-          SERVICE_COUNT_ROOT=0
-          for dir in */; do
-            dir="${dir%/}"
-            case "${dir}" in
-              frontend|backend|.github|.git|node_modules|target|dist|docs|scripts|config|helm|k8s) continue ;;
-            esac
-            [ -f "${dir}/Dockerfile" ] && SERVICE_COUNT_ROOT=$((SERVICE_COUNT_ROOT + 1))
-          done
+      # ... Ta logique de détection mono/micro actuelle ...
+      # Ajoute juste cette ligne pour passer l'environnement aux jobs suivants
+      - name: Set Environment Target
+        run: echo "env_target=${{ github.event.inputs.environment || 'staging' }}" >> "$GITHUB_OUTPUT"
 
-          # Compter les microservices DANS backend/ (nouveau pattern)
-          SERVICE_COUNT_BACKEND=0
-          if [ -d "backend" ]; then
-            for dir in backend/*/; do
-              [ -d "${dir}" ] || continue
-              dir="${dir%/}"
-              dir="${dir##*/}"
-              [ -f "backend/${dir}/Dockerfile" ] && SERVICE_COUNT_BACKEND=$((SERVICE_COUNT_BACKEND + 1))
-            done
-          fi
-
-          # Total des microservices
-          TOTAL_SERVICES=$((SERVICE_COUNT_ROOT + SERVICE_COUNT_BACKEND))
-
-          # Vérifier si c'est un projet "classique" mono/dual
-          HAS_CLASSIC="false"
-          { [ -f "frontend/Dockerfile" ] || [ -f "Dockerfile.frontend" ] || \
-            [ -f "backend/Dockerfile"  ] || [ -f "Dockerfile.backend"  ] || \
-            [ -f "Dockerfile" ]; } && HAS_CLASSIC="true"
-
-          echo "🔍 Analyse :"
-          echo "   - Microservices à la racine : ${SERVICE_COUNT_ROOT}"
-          echo "   - Microservices dans backend/ : ${SERVICE_COUNT_BACKEND}"
-          echo "   - Total microservices : ${TOTAL_SERVICES}"
-          echo "   - Structure classique : ${HAS_CLASSIC}"
-
-          # Décision : micro si plusieurs services ET pas de structure classique pure
-          if [ "${TOTAL_SERVICES}" -ge 2 ]; then
-            echo "mode=micro" >> "$GITHUB_OUTPUT"
-            echo "✅ Mode détecté : MICROSERVICES (${TOTAL_SERVICES} services)"
-          elif [ "${HAS_CLASSIC}" = "true" ]; then
-            echo "mode=mono" >> "$GITHUB_OUTPUT"
-            echo "✅ Mode détecté : MONO"
-          else
-            echo "mode=mono" >> "$GITHUB_OUTPUT"
-            echo "✅ Mode détecté : MONO (défaut)"
-          fi
-
-  mono:
-    needs: detect
-    if: needs.detect.outputs.mode == 'mono'
-    uses: winddevops-org/devops-templates/.github/workflows/mono-pipeline.yml@main
-    secrets: inherit
-
-  micro:
-    needs: detect
-    if: needs.detect.outputs.mode == 'micro'
-    uses: winddevops-org/devops-templates/.github/workflows/micro-pipeline.yml@main
-    secrets: inherit
+  # Tes jobs mono et micro actuels...
+  # Assure-toi qu'ils reçoivent l'input 'environment' via needs.detect.outputs.env_target
