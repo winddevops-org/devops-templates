@@ -1,27 +1,18 @@
-# .github/workflows/deploy-template.yml
-name: Deploy Template (Hybrid CI/CD)
+name: Deploy Template Hybrid CI/CD
 
 on:
-  # MODE 1 : Automatique (Push sur main)
-  push:
-    branches: [main]
-  
-  # MODE 2 : Manuel (Dashboard / UI GitHub)
-  workflow_dispatch:
+  workflow_call:
     inputs:
       environment:
-        description: 'Target Environment'
         required: true
-        default: 'staging'
-        type: choice
-        options:
-          - staging
-          - production
+        type: string
       force_deploy:
-        description: 'Force rebuild even if image exists?'
         required: false
         default: 'false'
         type: boolean
+    secrets:
+      GITOPS_TOKEN:
+        required: true
 
 jobs:
   detect:
@@ -33,14 +24,12 @@ jobs:
       db_type: ${{ steps.detect.outputs.db_type }}
     steps:
       - uses: actions/checkout@v4
-      - name: Detect Mode & Scan
+      - name: Detect Mode and Scan
         id: scan
         run: |
           APP_NAME=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
           echo "app_name=${APP_NAME}" >> "$GITHUB_OUTPUT"
           
-          # Ta logique de détection mono/micro/dual existante...
-          # Exemple simplifié pour l'exemple :
           DEPLOY_MODE="mono"
           DB_TYPE="none"
           
@@ -49,13 +38,11 @@ jobs:
             [ "${DEPLOY_MODE}" = "front-only" ] && DEPLOY_MODE="dual" || DEPLOY_MODE="back-only"
           fi
           
-          # Détection DB (ta logique existante)
           if grep -q "postgresql" backend/pom.xml 2>/dev/null; then DB_TYPE="postgresql"; fi
           
           echo "mode=${DEPLOY_MODE}" >> "$GITHUB_OUTPUT"
           echo "db_type=${DB_TYPE}" >> "$GITHUB_OUTPUT"
-          echo "services=[]" >> "$GITHUB_OUTPUT" # À adapter selon ta logique microservices
-          echo "✅ Detected: ${DEPLOY_MODE} | DB: ${DB_TYPE}"
+          echo "services=[]" >> "$GITHUB_OUTPUT"
 
   build-service:
     needs: detect
@@ -69,10 +56,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - name: Build & Push Image
+      - name: Build and Push Image
         run: |
-          # Ta logique de build/test/push existante...
-          # Utilise ${{ github.sha }} comme tag
           IMAGE="${{ env.REGISTRY }}/${{ env.APP_NAME }}:${{ github.sha }}"
           docker build -t "${IMAGE}" .
           docker push "${IMAGE}"
@@ -82,12 +67,10 @@ jobs:
     runs-on: self-hosted
     if: success()
     
-    # ==========================================
-    # C'EST ICI QUE LA MAGIE OPÈRE
-    # ==========================================
+    environment: ${{ inputs.environment }}
+    
     env:
-      # Si workflow_dispatch -> prend l'input, sinon défaut 'staging'
-      ENV: ${{ github.event.inputs.environment || 'staging' }}
+      ENV: ${{ inputs.environment }}
       APP_NAME: ${{ needs.detect.outputs.app_name }}
       SHA: ${{ github.sha }}
       DB_TYPE: ${{ needs.detect.outputs.db_type }}
@@ -100,7 +83,5 @@ jobs:
       
       - name: Update GitOps Manifests
         run: |
-          # Ton script EXISTANT est appelé tel quel !
-          # Il reçoit ENV, DB_TYPE, DEPLOY_MODE etc. via l'environnement du job
           chmod +x scripts/update-gitops.sh
           ./scripts/update-gitops.sh
