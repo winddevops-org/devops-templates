@@ -100,7 +100,6 @@ jobs:
           else echo "HAS_MAVEN=false" >> "$GITHUB_ENV"; fi
           echo "DB_TYPE=${DB_TYPE}" >> "$GITHUB_ENV"
 
-      # ── DOCKER LOGIN DYNAMIQUE (Nexus Staging / ACR Prod) ──────
       - name: Setup Docker Credentials
         run: |
           if [ "${{ inputs.environment }}" = "production" ]; then
@@ -138,7 +137,6 @@ jobs:
           fi
           echo "SKIP_BUILD=${SKIP}" >> "$GITHUB_ENV"
 
-      # ── TESTS & LINT (Identiques à votre version originale) ────
       - name: Install frontend dependencies
         if: env.HAS_FRONT == 'true' && env.SKIP_BUILD != 'true'
         run: |
@@ -176,7 +174,6 @@ jobs:
             192.168.1.239:8085/selfkhaoula/node:20-alpine \
             sh -c "if node -e \"const p=require('./package.json'); process.exit(p.scripts&&p.scripts.lint?0:1);\" 2>/dev/null; then npm run lint; else echo 'Pas de script lint'; fi"
 
-      # ─ BUILD DYNAMIQUE (Nexus Staging / ACR Prod) ─────────────
       - name: Build (mono)
         if: env.DEPLOY_MODE == 'mono' && env.SKIP_BUILD != 'true'
         run: |
@@ -201,7 +198,6 @@ jobs:
           docker build -f "${BACK_FILE}" -t "${IMAGE}" "${BACK_CONTEXT}"
           echo "BACK_LOCAL_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
 
-      # ── TRIVY + SMOKE (Identiques à votre version originale) ──
       - name: Trivy scan
         if: env.SKIP_BUILD != 'true'
         continue-on-error: true
@@ -234,7 +230,6 @@ jobs:
             docker stop "${CONTAINER_ID}" 2>/dev/null || true
           done
 
-      # ── PUSH DYNAMIQUE (Nexus Staging / ACR Prod) ──────────────
       - name: Push images
         if: env.SKIP_BUILD != 'true'
         run: |
@@ -245,7 +240,6 @@ jobs:
             docker push "${LOCAL_IMAGE}"
           fi
 
-      # ── GITOPS CENTRALISÉ (Script inchangé) ────────────────────
       - name: Update GitOps
         env:
           GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
