@@ -25,13 +25,17 @@ jobs:
       app_name: ${{ steps.scan.outputs.app_name }}
     steps:
       - uses: actions/checkout@v4
+      
       - name: Scan services
         id: scan
         run: |
           APP_NAME=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
           echo "app_name=${APP_NAME}" >> "$GITHUB_OUTPUT"
+          
           SERVICES="["
           FIRST=true
+          
+          # Scan root-level service directories
           for dir in */; do
             dir="${dir%/}"
             case "${dir}" in .github|.git|node_modules|target|dist|docs|scripts|config|helm|k8s|frontend|backend) continue ;; esac
@@ -41,6 +45,8 @@ jobs:
               FIRST="false"
             fi
           done
+          
+          # Scan backend sub-services
           if [ -d "backend" ]; then
             for dir in backend/*/; do
               [ -d "${dir}" ] || continue
@@ -52,8 +58,19 @@ jobs:
               fi
             done
           fi
+          
           SERVICES="${SERVICES}]"
+          
+          # SAFETY CHECK: Fail fast if no services found instead of crashing matrix
+          if [ "${SERVICES}" = "[]" ]; then
+            echo "ERROR: No Dockerfiles found in expected locations"
+            echo "Current directory structure:"
+            find . -maxdepth 3 -name "Dockerfile" -type f
+            exit 1
+          fi
+          
           echo "services=${SERVICES}" >> "$GITHUB_OUTPUT"
+          echo "Found services: ${SERVICES}"
 
   build-service:
     needs: discover
