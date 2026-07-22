@@ -15,7 +15,6 @@ on:
         required: true
 
 env:
-  DEFAULT_REGISTRY: 192.168.1.239:8085/selfkhaoula
   NEXUS_CERT_PATH: /home/ubuntu/nexus/certs/nexus.crt
 
 jobs:
@@ -196,7 +195,6 @@ jobs:
       group: gitops-environments-push-${{ inputs.environment }}
       cancel-in-progress: false
     
-    # 🔒 PORTE DE SÉCURITÉ POUR LA PRODUCTION
     environment: ${{ inputs.environment }}
     
     env:
