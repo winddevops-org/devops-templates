@@ -1,4 +1,4 @@
-name: Micro Pipeline Standardized
+name: Mono Pipeline
 
 on:
   workflow_call:
@@ -14,244 +14,372 @@ on:
       ACR_PASSWORD:
         required: true
 
-env:
-  REGISTRY: 192.168.1.239:8085/selfkhaoula
-  NEXUS_CERT_PATH: /home/ubuntu/nexus/certs/nexus.crt
-
 jobs:
-  discover:
+  pipeline:
     runs-on: self-hosted
-    outputs:
-      services: ${{ steps.scan.outputs.services }}
-      app_name: ${{ steps.scan.outputs.app_name }}
+    timeout-minutes: 60
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U testuser"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
     steps:
-      - uses: actions/checkout@v4
-      - name: Scan services
-        id: scan
+      # ── CLEAN WORKSPACE ────────────────────────────────────────
+      - name: Clean workspace
         run: |
-          APP_NAME=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
-          echo "app_name=${APP_NAME}" >> "$GITHUB_OUTPUT"
-          SERVICES="["
-          FIRST=true
-          for dir in */; do
-            dir="${dir%/}"
-            case "${dir}" in .github|.git|node_modules|target|dist|docs|scripts|config|helm|k8s|frontend|backend) continue ;; esac
-            if [ -f "${dir}/Dockerfile" ]; then
-              [ "${FIRST}" = "false" ] && SERVICES="${SERVICES},"
-              SERVICES="${SERVICES}\"${dir}\""
-              FIRST="false"
-            fi
-          done
-          if [ -d "backend" ]; then
-            for dir in backend/*/; do
-              [ -d "${dir}" ] || continue
-              dir="${dir%/}"; dir="${dir##*/}"
-              if [ -f "backend/${dir}/Dockerfile" ]; then
-                [ "${FIRST}" = "false" ] && SERVICES="${SERVICES},"
-                SERVICES="${SERVICES}\"backend/${dir}\""
-                FIRST="false"
-              fi
-            done
+          sudo git clean -ffdx 2>/dev/null || \
+          sudo find "${{ github.workspace }}" -mindepth 1 -delete 2>/dev/null || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── BUILDKIT ───────────────────────────────────────────────
+      - name: Enable Docker BuildKit
+        run: echo "DOCKER_BUILDKIT=1" >> "$GITHUB_ENV"
+
+      # ── APP NAME ───────────────────────────────────────────────
+      - name: Set APP_NAME
+        run: |
+          APP_NAME=$(echo "${{ github.event.repository.name }}" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's/[^a-z0-9-]/-/g')
+          echo "APP_NAME=${APP_NAME}" >> "$GITHUB_ENV"
+
+      # ── DETECT MODE ───────────────────────────────────────────
+      - name: Detect deploy mode & frontend location
+        run: |
+          HAS_FRONT="false"
+          HAS_BACK="false"
+          FRONT_FILE=""
+          FRONT_CONTEXT="."
+          BACK_FILE=""
+          BACK_CONTEXT="."
+          MONO_FILE=""
+          FRONT_AT_ROOT="false"
+
+          if [ -f "frontend/Dockerfile" ]; then
+            HAS_FRONT="true"
+            FRONT_FILE="frontend/Dockerfile"
+            FRONT_CONTEXT="frontend"
+          elif [ -f "Dockerfile.frontend" ]; then
+            HAS_FRONT="true"
+            FRONT_FILE="Dockerfile.frontend"
+            FRONT_CONTEXT="."
           fi
-          SERVICES="${SERVICES}]"
-          echo "services=${SERVICES}" >> "$GITHUB_OUTPUT"
 
-  build-service:
-    needs: discover
-    runs-on: self-hosted
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        service: ${{ fromJson(needs.discover.outputs.services) }}
-    env:
-      APP_NAME: ${{ needs.discover.outputs.app_name }}
-      SERVICE_PATH: ${{ matrix.service }}
-      # Dynamic registry selection - Nexus for staging, ACR for prod
-      REGISTRY: ${{ inputs.environment == 'production' && 'windazureacr.azurecr.io' || '192.168.1.239:8085/selfkhaoula' }}
+          if [ "${HAS_FRONT}" = "true" ] && [ -f "package.json" ] && [ -f "angular.json" ]; then
+            FRONT_AT_ROOT="true"
+          fi
 
-    steps:
-      - uses: actions/checkout@v4
+          if [ -f "backend/Dockerfile" ]; then
+            HAS_BACK="true"
+            BACK_FILE="backend/Dockerfile"
+            BACK_CONTEXT="backend"
+          elif [ -f "Dockerfile.backend" ]; then
+            HAS_BACK="true"
+            BACK_FILE="Dockerfile.backend"
+            BACK_CONTEXT="."
+          fi
 
-      - name: Set environment variables
+          if [ "${HAS_FRONT}" = "true" ] && [ "${HAS_BACK}" = "true" ]; then
+            DEPLOY_MODE="dual"
+          elif [ "${HAS_FRONT}" = "true" ]; then
+            DEPLOY_MODE="front-only"
+          elif [ "${HAS_BACK}" = "true" ]; then
+            DEPLOY_MODE="back-only"
+          elif [ -f "Dockerfile" ]; then
+            DEPLOY_MODE="mono"
+            MONO_FILE="Dockerfile"
+          else
+            echo "❌ Aucun Dockerfile trouvé."
+            exit 1
+          fi
+
+          echo "DEPLOY_MODE=${DEPLOY_MODE}"     >> "$GITHUB_ENV"
+          echo "HAS_FRONT=${HAS_FRONT}"         >> "$GITHUB_ENV"
+          echo "HAS_BACK=${HAS_BACK}"           >> "$GITHUB_ENV"
+          echo "FRONT_FILE=${FRONT_FILE}"       >> "$GITHUB_ENV"
+          echo "FRONT_CONTEXT=${FRONT_CONTEXT}" >> "$GITHUB_ENV"
+          echo "BACK_FILE=${BACK_FILE}"         >> "$GITHUB_ENV"
+          echo "BACK_CONTEXT=${BACK_CONTEXT}"   >> "$GITHUB_ENV"
+          echo "MONO_FILE=${MONO_FILE}"         >> "$GITHUB_ENV"
+          echo "FRONT_AT_ROOT=${FRONT_AT_ROOT}" >> "$GITHUB_ENV"
+          echo "✅ Deploy mode : ${DEPLOY_MODE}"
+
+      # ── DETECT BACKEND TECH & DB ───────────────────────────────
+      - name: Detect backend technology & Database type
         run: |
-          SERVICE_NAME=$(basename "${{ env.SERVICE_PATH }}")
-          echo "SERVICE=${SERVICE_NAME}" >> "$GITHUB_ENV"
-          echo "IMAGE=${{ env.REGISTRY }}/${{ env.APP_NAME }}-${SERVICE_NAME}:${{ github.sha }}" >> "$GITHUB_ENV"
+          DB_TYPE="none"
+          HAS_MAVEN=false
+          JAVA_VERSION="17"
 
-      - name: Pre-cleanup
+          if [ -f "backend/pom.xml" ]; then
+            HAS_MAVEN=true
+            JAVA_VERSION=$(grep -oP '(?<=<java.version>)[^<]+' backend/pom.xml 2>/dev/null | head -1)
+            [ -z "${JAVA_VERSION}" ] && JAVA_VERSION="17"
+            
+            if grep -q "postgresql" backend/pom.xml; then DB_TYPE="postgresql"
+            elif grep -q "mysql" backend/pom.xml; then DB_TYPE="mysql"
+            elif grep -q "mongo" backend/pom.xml; then DB_TYPE="mongodb"
+            fi
+          fi
+
+          echo "DB_TYPE=${DB_TYPE}" >> "$GITHUB_ENV"
+          echo "HAS_MAVEN=${HAS_MAVEN}" >> "$GITHUB_ENV"
+          echo "JAVA_VERSION=${JAVA_VERSION}" >> "$GITHUB_ENV"
+
+      # ── MAVEN TESTS ───────────────────────────────────────────
+      - name: Run Maven Tests
+        if: env.HAS_MAVEN == 'true'
+        continue-on-error: true
         run: |
-          docker rm -f "test-db-${{ env.SERVICE }}" 2>/dev/null || true
-          docker rm -f "smoke-${{ env.SERVICE }}" 2>/dev/null || true
+          MAVEN_CACHE_DIR=$(mktemp -d)
+          mkdir -p backend/src/test/resources
+          
+          cat > backend/src/test/resources/application-test.yml << EOF
+          spring:
+            datasource:
+              url: jdbc:postgresql://localhost:5432/testdb
+              username: testuser
+              password: testpass
+            jpa:
+              hibernate:
+                ddl-auto: create-drop
+          EOF
 
-      - name: Setup Docker credentials
+          docker run --rm --network host \
+            -v "${{ github.workspace }}/backend:/app" \
+            -v "${MAVEN_CACHE_DIR}:/root/.m2" \
+            -w /app \
+            192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
+            mvn test -B -Dspring.profiles.active=test || echo "Tests finished with errors"
+
+      # ── MAVEN PACKAGE ──────────────────────────────────────────
+      - name: Package Backend
+        if: env.HAS_MAVEN == 'true'
+        run: |
+          MAVEN_CACHE_DIR=$(mktemp -d)
+          docker run --rm --network host \
+            -v "${{ github.workspace }}/backend:/app" \
+            -v "${MAVEN_CACHE_DIR}:/root/.m2" \
+            -w /app \
+            192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
+            mvn package -B -DskipTests
+
+      # ── ANGULAR TESTS ─────────────────────────────────────────
+      - name: Run Angular Tests
+        if: env.HAS_FRONT == 'true' && env.FRONT_AT_ROOT == 'true'
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/app" \
+            -w /app \
+            192.168.1.239:8085/selfkhaoula/node:20-browsers \
+            sh -c "npm ci --legacy-peer-deps && npx ng test --watch=false --browsers=ChromeHeadlessNoSandbox"
+
+      # ── ANGULAR BUILD ────────────────────────────────────────
+      - name: Build Angular App
+        if: env.HAS_FRONT == 'true' && env.FRONT_AT_ROOT == 'true'
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/app" \
+            -w /app \
+            192.168.1.239:8085/selfkhaoula/node:20-browsers \
+            sh -c "npm ci --legacy-peer-deps && npx ng build --configuration production"
+
+      # ── DOCKER BUILD & PUSH ────────────────────────────────────
+      - name: Setup Docker Credentials
         run: |
           if [ "${{ inputs.environment }}" = "production" ]; then
             echo "${{ secrets.ACR_PASSWORD }}" | docker login windazureacr.azurecr.io -u ${{ secrets.ACR_USERNAME }} --password-stdin
           else
             sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
-            sudo cp ${{ env.NEXUS_CERT_PATH }} /etc/docker/certs.d/192.168.1.239:8085/ca.crt
+            sudo cp /home/ubuntu/nexus/certs/nexus.crt /etc/docker/certs.d/192.168.1.239:8085/ca.crt
             sudo update-ca-certificates
             echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
           fi
 
-      - name: Check if image exists
-        id: check_image
+      - name: Build & Push Images
         run: |
-          SKIP="false"
-          if docker manifest inspect "${{ env.IMAGE }}" >/dev/null 2>&1; then SKIP="true"; fi
-          echo "SKIP_BUILD=${SKIP}" >> "$GITHUB_ENV"
+          REGISTRY="${{ inputs.environment == 'production' && 'windazureacr.azurecr.io' || '192.168.1.239:8085/selfkhaoula' }}"
+          SHA="${{ github.sha }}"
 
-      - name: Detect technology
-        id: detect
-        if: env.SKIP_BUILD != 'true'
-        run: |
-          DB_TYPE="none"; HAS_MAVEN=false; JAVA_VERSION="17"
-          if [ -f "${{ env.SERVICE_PATH }}/pom.xml" ]; then
-            HAS_MAVEN=true
-            JAVA_VERSION=$(grep -oP '(?<=<java.version>)[^<]+' "${{ env.SERVICE_PATH }}/pom.xml" 2>/dev/null | head -1)
-            [ -z "${JAVA_VERSION}" ] && JAVA_VERSION="17"
-            if grep -q "postgresql" "${{ env.SERVICE_PATH }}/pom.xml"; then DB_TYPE="postgresql"
-            elif grep -q "mysql" "${{ env.SERVICE_PATH }}/pom.xml"; then DB_TYPE="mysql"
-            fi
+          if [ "${DEPLOY_MODE}" = "mono" ]; then
+            docker build -t "${REGISTRY}/${APP_NAME}:${SHA}" -f "${MONO_FILE}" .
+            docker push "${REGISTRY}/${APP_NAME}:${SHA}"
+          elif [ "${DEPLOY_MODE}" = "dual" ]; then
+            docker build -t "${REGISTRY}/${APP_NAME}-backend:${SHA}" -f "${BACK_FILE}" "${BACK_CONTEXT}"
+            docker build -t "${REGISTRY}/${APP_NAME}-frontend:${SHA}" -f "${FRONT_FILE}" "${FRONT_CONTEXT}"
+            docker push "${REGISTRY}/${APP_NAME}-backend:${SHA}"
+            docker push "${REGISTRY}/${APP_NAME}-frontend:${SHA}"
+          elif [ "${DEPLOY_MODE}" = "back-only" ]; then
+            docker build -t "${REGISTRY}/${APP_NAME}:${SHA}" -f "${BACK_FILE}" "${BACK_CONTEXT}"
+            docker push "${REGISTRY}/${APP_NAME}:${SHA}"
+          elif [ "${DEPLOY_MODE}" = "front-only" ]; then
+            docker build -t "${REGISTRY}/${APP_NAME}:${SHA}" -f "${FRONT_FILE}" "${FRONT_CONTEXT}"
+            docker push "${REGISTRY}/${APP_NAME}:${SHA}"
           fi
-          echo "HAS_MAVEN=${HAS_MAVEN}" >> "$GITHUB_ENV"
-          echo "JAVA_VERSION=${JAVA_VERSION}" >> "$GITHUB_ENV"
-          echo "DB_TYPE=${DB_TYPE}" >> "$GITHUB_ENV"
 
-      - name: Run Java tests
-        if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
+      # ── SECURITY SCAN ──────────────────────────────────────────
+      - name: Trivy Security Scan
         continue-on-error: true
         run: |
-          docker run --rm --network host --user "$(id -u):$(id -g)" \
-            -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
-            -v "$HOME/.m2:/root/.m2" \
-            -w /app \
-            -e SPRING_PROFILES_ACTIVE=test,native \
-            -e SPRING_CLOUD_CONFIG_ENABLED=false \
-            -e SPRING_CLOUD_DISCOVERY_ENABLED=false \
-            -e EUREKA_CLIENT_ENABLED=false \
-            -e SPRING_MAIL_HOST=localhost \
-            -e SPRING_MAIL_PORT=25 \
-            -e MANAGEMENT_HEALTH_MAIL_ENABLED=false \
-            -e JWT_SECRET=ci-secret-key-for-testing-purposes-only-1234567890 \
-            192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
-            mvn test -B -DskipTests=false || echo "Tests failed but non-blocking"
+          REGISTRY="${{ inputs.environment == 'production' && 'windazureacr.azurecr.io' || '192.168.1.239:8085/selfkhaoula' }}"
+          SHA="${{ github.sha }}"
+          
+          if [ "${DEPLOY_MODE}" = "mono" ] || [ "${DEPLOY_MODE}" = "back-only" ]; then
+            trivy image --severity HIGH,CRITICAL --exit-code 0 "${REGISTRY}/${APP_NAME}:${SHA}"
+          elif [ "${DEPLOY_MODE}" = "dual" ]; then
+            trivy image --severity HIGH,CRITICAL --exit-code 0 "${REGISTRY}/${APP_NAME}-backend:${SHA}"
+            trivy image --severity HIGH,CRITICAL --exit-code 0 "${REGISTRY}/${APP_NAME}-frontend:${SHA}"
+          elif [ "${DEPLOY_MODE}" = "front-only" ]; then
+            trivy image --severity HIGH,CRITICAL --exit-code 0 "${REGISTRY}/${APP_NAME}:${SHA}"
+          fi
 
-      - name: Package Application
-        if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
+      # ── SMOKE TEST ─────────────────────────────────────────────
+      - name: Smoke Test
         run: |
-          docker run --rm --network host --user "$(id -u):$(id -g)" \
-            -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
-            -v "$HOME/.m2:/root/.m2" \
-            -w /app \
-            192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
-            mvn package -B -DskipTests
+          REGISTRY="${{ inputs.environment == 'production' && 'windazureacr.azurecr.io' || '192.168.1.239:8085/selfkhaoula' }}"
+          SHA="${{ github.sha }}"
+          
+          if [ "${DEPLOY_MODE}" = "mono" ] || [ "${DEPLOY_MODE}" = "back-only" ]; then
+            IMAGE="${REGISTRY}/${APP_NAME}:${SHA}"
+          elif [ "${DEPLOY_MODE}" = "dual" ]; then
+            IMAGE="${REGISTRY}/${APP_NAME}-backend:${SHA}"
+          elif [ "${DEPLOY_MODE}" = "front-only" ]; then
+            IMAGE="${REGISTRY}/${APP_NAME}:${SHA}"
+          fi
 
-      - name: Build Docker image
-        if: env.SKIP_BUILD != 'true'
-        run: |
-          docker build -f "${{ env.SERVICE_PATH }}/Dockerfile" -t "${{ env.IMAGE }}" "${{ env.SERVICE_PATH }}"
-
-      - name: Security scan
-        if: env.SKIP_BUILD != 'true'
-        continue-on-error: true
-        run: trivy image --severity HIGH,CRITICAL --exit-code 0 "${{ env.IMAGE }}"
-
-      - name: Smoke test
-        if: env.SKIP_BUILD != 'true'
-        run: |
-          CONTAINER_ID=$(docker run -d --name smoke-${{ env.SERVICE }} \
+          CONTAINER_ID=$(docker run -d --name smoke-test \
             -e SPRING_PROFILES_ACTIVE=prod \
             -e SPRING_CLOUD_CONFIG_ENABLED=false \
-            -e SPRING_CLOUD_DISCOVERY_ENABLED=false \
-            -e EUREKA_CLIENT_ENABLED=false \
-            "${{ env.IMAGE }}")
-          MAX_WAIT=30; WAITED=0
-          while [ $WAITED -lt $MAX_WAIT ]; do
+            "${IMAGE}")
+          
+          WAITED=0
+          while [ $WAITED -lt 30 ]; do
             STATUS=$(docker inspect --format='{{.State.Status}}' "${CONTAINER_ID}" 2>/dev/null || echo "gone")
             if [ "${STATUS}" = "running" ]; then
-              echo "Container started successfully"; docker stop "${CONTAINER_ID}"; exit 0
+              echo "✅ Container started successfully"
+              docker stop "${CONTAINER_ID}"
+              exit 0
             elif [ "${STATUS}" = "exited" ]; then
-              echo "Container stopped prematurely"; docker logs "${CONTAINER_ID}"; exit 1
+              echo "Container stopped prematurely"
+              docker logs "${CONTAINER_ID}"
+              exit 1
             fi
-            sleep 2; WAITED=$((WAITED + 2))
+            sleep 2
+            WAITED=$((WAITED + 2))
           done
-          echo "Timeout"; docker logs "${CONTAINER_ID}"; exit 1
+          echo "Timeout waiting for container"
+          docker logs "${CONTAINER_ID}"
+          exit 1
 
-      - name: Push image
-        if: env.SKIP_BUILD != 'true'
-        run: docker push "${{ env.IMAGE }}"
-
-      - name: Cleanup
-        if: always()
-        run: |
-          docker rm -f test-db-${{ env.SERVICE }} 2>/dev/null || true
-          docker rm -f smoke-${{ env.SERVICE }} 2>/dev/null || true
-
-  gitops:
-    needs: [discover, build-service]
-    runs-on: self-hosted
-    if: success()
-    concurrency:
-      group: gitops-environments-push-${{ inputs.environment }}
-      cancel-in-progress: false
-    
-    environment: ${{ inputs.environment }}
-    
-    env:
-      APP_NAME: ${{ needs.discover.outputs.app_name }}
-      ENV: ${{ inputs.environment }}
-      REGISTRY: ${{ inputs.environment == 'production' && 'windazureacr.azurecr.io' || '192.168.1.239:8085/selfkhaoula' }}
-
-    steps:
-      - uses: actions/checkout@v4
-      - name: Checkout devops-templates
-        uses: actions/checkout@v4
-        with:
-          repository: winddevops-org/devops-templates
-          path: devops-templates
-          token: ${{ secrets.GITOPS_TOKEN }}
-      - name: Update GitOps
+      # ── GITOPS UPDATE ─────────────────────────────────────────
+      - name: Update GitOps Repository
         env:
           GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
+          APP_NAME: ${{ env.APP_NAME }}
           SHA: ${{ github.sha }}
-          SERVICES: ${{ needs.discover.outputs.services }}
+          DEPLOY_MODE: ${{ env.DEPLOY_MODE }}
+          ENV: ${{ inputs.environment }}
+          REGISTRY: ${{ inputs.environment == 'production' && 'windazureacr.azurecr.io' || '192.168.1.239:8085/selfkhaoula' }}
         run: |
           git clone "https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git" gitops-environments
           cd gitops-environments
-          git config user.email "ci@github.com"; git config user.name "GitHub Actions"
-          SERVICES_JSON='${{ env.SERVICES }}'
-          SERVICES_LIST=$(echo "${SERVICES_JSON}" | jq -r '.[]')
-          for SERVICE_PATH in ${SERVICES_LIST}; do
-            SERVICE_NAME=$(basename "${SERVICE_PATH}")
-            COMP="${APP_NAME}-${SERVICE_NAME}"
-            VPATH="environments/${ENV}/${COMP}/values.yaml"
-            mkdir -p "$(dirname "${VPATH}")"
-            if [ ! -f "${VPATH}" ]; then
-              REPLICA_COUNT=1
-              [ "${ENV}" = "production" ] && REPLICA_COUNT=2
-              
-              printf '%s\n' "name: ${COMP}" "namespace: ${ENV}-${COMP}" "replicaCount: ${REPLICA_COUNT}" "image:" "  repository: \"${REGISTRY}/${COMP}\"" "  tag: \"${SHA}\"" "  pullPolicy: IfNotPresent" "imagePullSecrets:" "- name: nexus-registry-secret" "service:" "  type: ClusterIP" "  port: 80" "  targetPort: 80" "ingress:" "  enabled: true" "  className: nginx" "  host: ${COMP}.${ENV}.local" "  path: /" "  pathType: Prefix" "resources:" "  limits:" "    cpu: 500m" "    memory: 512Mi" "  requests:" "    cpu: 250m" "    memory: 256Mi" "env: []" > "${VPATH}"
+          git config user.email "ci@github.com"
+          git config user.name "GitHub Actions"
+
+          TARGET_NS="${ENV}-${APP_NAME}"
+          VPATH="environments/${ENV}/${APP_NAME}/values.yaml"
+          mkdir -p "$(dirname "${VPATH}")"
+
+          if [ ! -f "${VPATH}" ]; then
+            if [ "${DEPLOY_MODE}" = "dual" ]; then
+              printf '%s\n' \
+                "name: ${APP_NAME}" \
+                "namespace: ${TARGET_NS}" \
+                "backend:" \
+                "  image:" \
+                "    repository: \"${REGISTRY}/${APP_NAME}-backend\"" \
+                "    tag: \"${SHA}\"" \
+                "frontend:" \
+                "  image:" \
+                "    repository: \"${REGISTRY}/${APP_NAME}-frontend\"" \
+                "    tag: \"${SHA}\"" \
+                "ingress:" \
+                "  enabled: true" \
+                "  host: ${APP_NAME}.${ENV}.local" > "${VPATH}"
             else
-              sed -i "s|repository:.*|repository: \"${REGISTRY}/${COMP}\"|" "${VPATH}"
-              sed -i "s|tag:.*|tag: \"${SHA}\"|" "${VPATH}"
-              if [ "${ENV}" = "production" ]; then
-                sed -i "s|replicaCount:.*|replicaCount: 2|" "${VPATH}"
-              fi
+              printf '%s\n' \
+                "name: ${APP_NAME}" \
+                "namespace: ${TARGET_NS}" \
+                "image:" \
+                "  repository: \"${REGISTRY}/${APP_NAME}\"" \
+                "  tag: \"${SHA}\"" \
+                "ingress:" \
+                "  enabled: true" \
+                "  host: ${APP_NAME}.${ENV}.local" > "${VPATH}"
             fi
-            APATH="argocd-applications/${COMP}-${ENV}.yaml"
-            mkdir -p argocd-applications
-            if [ ! -f "${APATH}" ]; then
-              printf '%s\n' "apiVersion: argoproj.io/v1alpha1" "kind: Application" "metadata:" "  name: ${COMP}-${ENV}" "  namespace: argocd" "spec:" "  project: stagiaires" "  sources:" "    - repoURL: https://github.com/winddevops-org/devops-templates" "      targetRevision: main" "      path: helm-charts/app-generic" "      helm:" "        valueFiles:" "          - \$values/environments/${ENV}/${COMP}/values.yaml" "    - repoURL: https://github.com/winddevops-org/gitops-environments" "      targetRevision: main" "      ref: values" "  destination:" "    server: https://kubernetes.default.svc" "    namespace: ${ENV}-${COMP}" "  syncPolicy:" "    automated:" "      prune: true" "      selfHeal: true" "    syncOptions:" "      - CreateNamespace=true" > "${APATH}"
-            fi
-          done
+          else
+            sed -i "s|tag:.*|tag: \"${SHA}\"|" "${VPATH}"
+            sed -i "s|namespace:.*|namespace: ${TARGET_NS}|" "${VPATH}"
+            sed -i "s|repository:.*|repository: \"${REGISTRY}/${APP_NAME}\"|" "${VPATH}"
+          fi
+
+          APATH="argocd-applications/${APP_NAME}-${ENV}.yaml"
+          mkdir -p argocd-applications
+          if [ ! -f "${APATH}" ]; then
+            printf '%s\n' \
+              "apiVersion: argoproj.io/v1alpha1" \
+              "kind: Application" \
+              "metadata:" \
+              "  name: ${APP_NAME}-${ENV}" \
+              "  namespace: argocd" \
+              "spec:" \
+              "  project: stagiaires" \
+              "  sources:" \
+              "    - repoURL: https://github.com/winddevops-org/devops-templates" \
+              "      targetRevision: main" \
+              "      path: helm-charts/app-generic" \
+              "      helm:" \
+              "        valueFiles:" \
+              "          - \$values/environments/${ENV}/${APP_NAME}/values.yaml" \
+              "    - repoURL: https://github.com/winddevops-org/gitops-environments" \
+              "      targetRevision: main" \
+              "      ref: values" \
+              "  destination:" \
+              "    server: https://kubernetes.default.svc" \
+              "    namespace: ${TARGET_NS}" \
+              "  syncPolicy:" \
+              "    automated:" \
+              "      prune: true" \
+              "      selfHeal: true" \
+              "    syncOptions:" \
+              "      - CreateNamespace=true" > "${APATH}"
+          fi
+
           git add .
-          if git diff --cached --quiet; then echo "Nothing to commit."; exit 0; fi
-          git commit -m "[${APP_NAME}] deploy all microservices -> ${SHA} (env: ${ENV})"
-          ATTEMPTS=0; MAX_ATTEMPTS=5
+          if git diff --cached --quiet; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+          git commit -m "[${APP_NAME}] deploy -> ${SHA} (env: ${ENV})"
+
+          ATTEMPTS=0
           until git push origin main; do
             ATTEMPTS=$((ATTEMPTS + 1))
-            if [ "${ATTEMPTS}" -ge "${MAX_ATTEMPTS}" ]; then echo "Push failed."; exit 1; fi
-            echo "Retrying push..."; sleep $((RANDOM % 5 + 1)); git pull --rebase origin main
+            [ "${ATTEMPTS}" -ge 5 ] && { echo "Push failed"; exit 1; }
+            sleep $((RANDOM % 5 + 1))
+            git pull --rebase origin main
           done
