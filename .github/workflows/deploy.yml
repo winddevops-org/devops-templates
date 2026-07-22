@@ -9,8 +9,9 @@ on:
         description: 'Cible de déploiement: staging ou production'
       force_deploy:
         required: false
+        type: string
         default: 'false'
-        type: boolean
+        description: 'Forcer le déploiement même si aucune modification détectée'
     secrets:
       GITOPS_TOKEN:
         required: true
@@ -54,7 +55,6 @@ jobs:
     timeout-minutes: 45
     env:
       APP_NAME: ${{ needs.detect.outputs.app_name }}
-      # Sélection dynamique du registre selon l'environnement
       REGISTRY: ${{ inputs.environment == 'production' && 'windazureacr.azurecr.io' || '192.168.1.239:8085/selfkhaoula' }}
 
     steps:
