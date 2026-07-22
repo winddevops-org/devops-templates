@@ -6,12 +6,17 @@ on:
       environment:
         required: true
         type: string
+        description: 'Cible de déploiement: staging ou production'
       force_deploy:
         required: false
         default: 'false'
         type: boolean
     secrets:
       GITOPS_TOKEN:
+        required: true
+      ACR_USERNAME:
+        required: true
+      ACR_PASSWORD:
         required: true
 
 jobs:
@@ -20,10 +25,10 @@ jobs:
     outputs:
       mode: ${{ steps.detect.outputs.mode }}
       app_name: ${{ steps.scan.outputs.app_name }}
-      services: ${{ steps.scan.outputs.services }}
       db_type: ${{ steps.detect.outputs.db_type }}
     steps:
       - uses: actions/checkout@v4
+      
       - name: Detect Mode and Scan
         id: scan
         run: |
@@ -42,7 +47,6 @@ jobs:
           
           echo "mode=${DEPLOY_MODE}" >> "$GITHUB_OUTPUT"
           echo "db_type=${DB_TYPE}" >> "$GITHUB_OUTPUT"
-          echo "services=[]" >> "$GITHUB_OUTPUT"
 
   build-service:
     needs: detect
@@ -50,12 +54,25 @@ jobs:
     timeout-minutes: 45
     env:
       APP_NAME: ${{ needs.detect.outputs.app_name }}
-      REGISTRY: 192.168.1.239:8085/selfkhaoula
-      NEXUS_CERT_PATH: /home/ubuntu/nexus/certs/nexus.crt
+      # Sélection dynamique du registre selon l'environnement
+      REGISTRY: ${{ inputs.environment == 'production' && 'windazureacr.azurecr.io' || '192.168.1.239:8085/selfkhaoula' }}
 
     steps:
       - uses: actions/checkout@v4
       
+      - name: Login to Azure Container Registry
+        if: inputs.environment == 'production'
+        uses: azure/docker-login@v1
+        with:
+          login-server: windazureacr.azurecr.io
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+      
+      - name: Login to Nexus Registry
+        if: inputs.environment != 'production'
+        run: |
+          echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
+
       - name: Build and Push Image
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.APP_NAME }}:${{ github.sha }}"
@@ -67,6 +84,7 @@ jobs:
     runs-on: self-hosted
     if: success()
     
+    # PORTE DE SÉCURITÉ : Bloque jusqu'à approbation manuelle en prod
     environment: ${{ inputs.environment }}
     
     env:
@@ -75,7 +93,7 @@ jobs:
       SHA: ${{ github.sha }}
       DB_TYPE: ${{ needs.detect.outputs.db_type }}
       DEPLOY_MODE: ${{ needs.detect.outputs.mode }}
-      REGISTRY: 192.168.1.239:8085/selfkhaoula
+      REGISTRY: ${{ inputs.environment == 'production' && 'windazureacr.azurecr.io' || '192.168.1.239:8085/selfkhaoula' }}
       GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
 
     steps:
