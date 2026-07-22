@@ -60,7 +60,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - name: Login to Azure Container Registry
+      - name: Login to Azure Container Registry (Prod only)
         if: inputs.environment == 'production'
         uses: azure/docker-login@v1
         with:
@@ -68,7 +68,7 @@ jobs:
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
       
-      - name: Login to Nexus Registry
+      - name: Login to Nexus Registry (Staging only)
         if: inputs.environment != 'production'
         run: |
           echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
@@ -84,7 +84,7 @@ jobs:
     runs-on: self-hosted
     if: success()
     
-    # PORTE DE SÉCURITÉ : Bloque jusqu'à approbation manuelle en prod
+    # 🔒 PORTE DE SÉCURITÉ : Bloque jusqu'à approbation manuelle en prod
     environment: ${{ inputs.environment }}
     
     env:
