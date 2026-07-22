@@ -6,12 +6,10 @@ on:
       environment:
         required: true
         type: string
-        description: 'Cible de déploiement: staging ou production'
       force_deploy:
         required: false
-        type: string
         default: 'false'
-        description: 'Forcer le déploiement même si aucune modification détectée'
+        type: string
     secrets:
       GITOPS_TOKEN:
         required: true
@@ -26,10 +24,10 @@ jobs:
     outputs:
       mode: ${{ steps.detect.outputs.mode }}
       app_name: ${{ steps.scan.outputs.app_name }}
+      services: ${{ steps.scan.outputs.services }}
       db_type: ${{ steps.detect.outputs.db_type }}
     steps:
       - uses: actions/checkout@v4
-      
       - name: Detect Mode and Scan
         id: scan
         run: |
@@ -48,6 +46,7 @@ jobs:
           
           echo "mode=${DEPLOY_MODE}" >> "$GITHUB_OUTPUT"
           echo "db_type=${DB_TYPE}" >> "$GITHUB_OUTPUT"
+          echo "services=[]" >> "$GITHUB_OUTPUT"
 
   build-service:
     needs: detect
@@ -56,6 +55,7 @@ jobs:
     env:
       APP_NAME: ${{ needs.detect.outputs.app_name }}
       REGISTRY: ${{ inputs.environment == 'production' && 'windazureacr.azurecr.io' || '192.168.1.239:8085/selfkhaoula' }}
+      NEXUS_CERT_PATH: /home/ubuntu/nexus/certs/nexus.crt
 
     steps:
       - uses: actions/checkout@v4
@@ -71,6 +71,9 @@ jobs:
       - name: Login to Nexus Registry (Staging only)
         if: inputs.environment != 'production'
         run: |
+          sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
+          sudo cp ${{ env.NEXUS_CERT_PATH }} /etc/docker/certs.d/192.168.1.239:8085/ca.crt
+          sudo update-ca-certificates
           echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
 
       - name: Build and Push Image
