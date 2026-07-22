@@ -2,12 +2,20 @@ name: Micro Pipeline Standardized
 
 on:
   workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
     secrets:
       GITOPS_TOKEN:
         required: true
+      ACR_USERNAME:
+        required: true
+      ACR_PASSWORD:
+        required: true
 
 env:
-  REGISTRY: 192.168.1.239:8085/selfkhaoula
+  DEFAULT_REGISTRY: 192.168.1.239:8085/selfkhaoula
   NEXUS_CERT_PATH: /home/ubuntu/nexus/certs/nexus.crt
 
 jobs:
@@ -59,6 +67,7 @@ jobs:
     env:
       APP_NAME: ${{ needs.discover.outputs.app_name }}
       SERVICE_PATH: ${{ matrix.service }}
+      REGISTRY: ${{ inputs.environment == 'production' && 'windazureacr.azurecr.io' || '192.168.1.239:8085/selfkhaoula' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -76,10 +85,14 @@ jobs:
 
       - name: Setup Docker credentials
         run: |
-          sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
-          sudo cp ${{ env.NEXUS_CERT_PATH }} /etc/docker/certs.d/192.168.1.239:8085/ca.crt
-          sudo update-ca-certificates
-          echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
+          if [ "${{ inputs.environment }}" = "production" ]; then
+            echo "${{ secrets.ACR_PASSWORD }}" | docker login windazureacr.azurecr.io -u ${{ secrets.ACR_USERNAME }} --password-stdin
+          else
+            sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
+            sudo cp ${{ env.NEXUS_CERT_PATH }} /etc/docker/certs.d/192.168.1.239:8085/ca.crt
+            sudo update-ca-certificates
+            echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
+          fi
 
       - name: Check if image exists
         id: check_image
@@ -105,13 +118,10 @@ jobs:
           echo "JAVA_VERSION=${JAVA_VERSION}" >> "$GITHUB_ENV"
           echo "DB_TYPE=${DB_TYPE}" >> "$GITHUB_ENV"
 
-      # ── TESTS JAVA SIMPLIFIÉS (Comme dans Mono) ──────────────
       - name: Run Java tests
         if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
         continue-on-error: true
         run: |
-          # On utilise le même réseau host que dans Mono pour éviter les soucis de port
-          # On mappe le .m2 de l'utilisateur comme dans Mono
           docker run --rm --network host --user "$(id -u):$(id -g)" \
             -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
             -v "$HOME/.m2:/root/.m2" \
@@ -183,10 +193,17 @@ jobs:
     runs-on: self-hosted
     if: success()
     concurrency:
-      group: gitops-environments-push
+      group: gitops-environments-push-${{ inputs.environment }}
       cancel-in-progress: false
+    
+    # 🔒 PORTE DE SÉCURITÉ POUR LA PRODUCTION
+    environment: ${{ inputs.environment }}
+    
     env:
       APP_NAME: ${{ needs.discover.outputs.app_name }}
+      ENV: ${{ inputs.environment }}
+      REGISTRY: ${{ inputs.environment == 'production' && 'windazureacr.azurecr.io' || '192.168.1.239:8085/selfkhaoula' }}
+
     steps:
       - uses: actions/checkout@v4
       - name: Checkout devops-templates
@@ -200,7 +217,6 @@ jobs:
           GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
           SHA: ${{ github.sha }}
           SERVICES: ${{ needs.discover.outputs.services }}
-          REGISTRY: 192.168.1.239:8085/selfkhaoula
         run: |
           git clone "https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git" gitops-environments
           cd gitops-environments
@@ -210,23 +226,29 @@ jobs:
           for SERVICE_PATH in ${SERVICES_LIST}; do
             SERVICE_NAME=$(basename "${SERVICE_PATH}")
             COMP="${APP_NAME}-${SERVICE_NAME}"
-            VPATH="environments/staging/${COMP}/values.yaml"
+            VPATH="environments/${ENV}/${COMP}/values.yaml"
             mkdir -p "$(dirname "${VPATH}")"
             if [ ! -f "${VPATH}" ]; then
-              printf '%s\n' "name: ${COMP}" "namespace: staging-${COMP}" "replicaCount: 1" "image:" "  repository: \"${REGISTRY}/${COMP}\"" "  tag: \"${SHA}\"" "  pullPolicy: IfNotPresent" "imagePullSecrets:" "- name: nexus-registry-secret" "service:" "  type: ClusterIP" "  port: 80" "  targetPort: 80" "ingress:" "  enabled: true" "  className: nginx" "  host: ${COMP}.staging.local" "  path: /" "  pathType: Prefix" "resources:" "  limits:" "    cpu: 500m" "    memory: 512Mi" "  requests:" "    cpu: 250m" "    memory: 256Mi" "env: []" > "${VPATH}"
+              REPLICA_COUNT=1
+              [ "${ENV}" = "production" ] && REPLICA_COUNT=2
+              
+              printf '%s\n' "name: ${COMP}" "namespace: ${ENV}-${COMP}" "replicaCount: ${REPLICA_COUNT}" "image:" "  repository: \"${REGISTRY}/${COMP}\"" "  tag: \"${SHA}\"" "  pullPolicy: IfNotPresent" "imagePullSecrets:" "- name: nexus-registry-secret" "service:" "  type: ClusterIP" "  port: 80" "  targetPort: 80" "ingress:" "  enabled: true" "  className: nginx" "  host: ${COMP}.${ENV}.local" "  path: /" "  pathType: Prefix" "resources:" "  limits:" "    cpu: 500m" "    memory: 512Mi" "  requests:" "    cpu: 250m" "    memory: 256Mi" "env: []" > "${VPATH}"
             else
               sed -i "s|repository:.*|repository: \"${REGISTRY}/${COMP}\"|" "${VPATH}"
               sed -i "s|tag:.*|tag: \"${SHA}\"|" "${VPATH}"
+              if [ "${ENV}" = "production" ]; then
+                sed -i "s|replicaCount:.*|replicaCount: 2|" "${VPATH}"
+              fi
             fi
-            APATH="argocd-applications/${COMP}.yaml"
+            APATH="argocd-applications/${COMP}-${ENV}.yaml"
             mkdir -p argocd-applications
             if [ ! -f "${APATH}" ]; then
-              printf '%s\n' "apiVersion: argoproj.io/v1alpha1" "kind: Application" "metadata:" "  name: ${COMP}" "  namespace: argocd" "spec:" "  project: stagiaires" "  sources:" "    - repoURL: https://github.com/winddevops-org/devops-templates" "      targetRevision: main" "      path: helm-charts/app-generic" "      helm:" "        valueFiles:" "          - \$values/environments/staging/${COMP}/values.yaml" "    - repoURL: https://github.com/winddevops-org/gitops-environments" "      targetRevision: main" "      ref: values" "  destination:" "    server: https://kubernetes.default.svc" "    namespace: staging-${COMP}" "  syncPolicy:" "    automated:" "      prune: true" "      selfHeal: true" "    syncOptions:" "      - CreateNamespace=true" > "${APATH}"
+              printf '%s\n' "apiVersion: argoproj.io/v1alpha1" "kind: Application" "metadata:" "  name: ${COMP}-${ENV}" "  namespace: argocd" "spec:" "  project: stagiaires" "  sources:" "    - repoURL: https://github.com/winddevops-org/devops-templates" "      targetRevision: main" "      path: helm-charts/app-generic" "      helm:" "        valueFiles:" "          - \$values/environments/${ENV}/${COMP}/values.yaml" "    - repoURL: https://github.com/winddevops-org/gitops-environments" "      targetRevision: main" "      ref: values" "  destination:" "    server: https://kubernetes.default.svc" "    namespace: ${ENV}-${COMP}" "  syncPolicy:" "    automated:" "      prune: true" "      selfHeal: true" "    syncOptions:" "      - CreateNamespace=true" > "${APATH}"
             fi
           done
           git add .
           if git diff --cached --quiet; then echo "Nothing to commit."; exit 0; fi
-          git commit -m "[${APP_NAME}] deploy all microservices -> ${SHA}"
+          git commit -m "[${APP_NAME}] deploy all microservices -> ${SHA} (env: ${ENV})"
           ATTEMPTS=0; MAX_ATTEMPTS=5
           until git push origin main; do
             ATTEMPTS=$((ATTEMPTS + 1))
