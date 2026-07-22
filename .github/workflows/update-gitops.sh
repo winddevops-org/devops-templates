@@ -11,7 +11,16 @@ SHA="${SHA}"
 DB_TYPE="${DB_TYPE}"
 DEPLOY_MODE="${DEPLOY_MODE}"
 ENV="${ENV:-staging}"
-REGISTRY="192.168.1.239:8085/selfkhaoula"
+
+# Sélection dynamique du registre
+if [ "${ENV}" = "production" ]; then
+  REGISTRY="windazureacr.azurecr.io"
+  REPLICA_COUNT=2
+else
+  REGISTRY="192.168.1.239:8085/selfkhaoula"
+  REPLICA_COUNT=1
+fi
+
 GITOPS_REPO="https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git"
 
 git clone "${GITOPS_REPO}" gitops-environments
@@ -28,7 +37,8 @@ get_base_name() {
 write_values() {
   local COMP="$1" REPO="$2" TAG="$3"
   local BASE_NAME=$(get_base_name "${COMP}")
-  local VPATH="environments/${ENV}/${BASE_NAME}/values-${COMP##*-}.yaml"
+  local COMPONENT="${COMP##*-}"
+  local VPATH="environments/${ENV}/${BASE_NAME}/values-${COMPONENT}.yaml"
   
   mkdir -p "$(dirname "${VPATH}")"
   
@@ -36,7 +46,7 @@ write_values() {
     cat > "${VPATH}" <<VALEOF
 name: ${COMP}
 namespace: ${ENV}-${BASE_NAME}
-replicaCount: 1
+replicaCount: ${REPLICA_COUNT}
 image:
   repository: "${REPO}"
   tag: "${TAG}"
@@ -80,11 +90,12 @@ database:
       enabled: true
       replicas: 2
 VALEOF
-    echo "values-${COMP##*-}.yaml cree pour ${COMP} dans namespace ${ENV}-${BASE_NAME}"
+    echo "values-${COMPONENT}.yaml cree pour ${COMP} dans namespace ${ENV}-${BASE_NAME}"
   else
     sed -i "s|repository:.*|repository: \"${REPO}\"|" "${VPATH}"
     sed -i "s|tag:.*|tag: \"${TAG}\"|" "${VPATH}"
-    echo "values-${COMP##*-}.yaml mis a jour pour ${COMP}"
+    sed -i "s|replicaCount:.*|replicaCount: ${REPLICA_COUNT}|" "${VPATH}"
+    echo "values-${COMPONENT}.yaml mis a jour pour ${COMP}"
   fi
 }
 
