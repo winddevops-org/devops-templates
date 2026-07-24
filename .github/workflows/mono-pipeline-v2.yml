@@ -252,3 +252,24 @@ jobs:
         run: |
           chmod +x devops-templates/.github/workflows/update-gitops.sh
           devops-templates/.github/workflows/update-gitops.sh
+
+      - name: Résumé du pipeline
+        if: always()
+        run: |
+          {
+            echo "## 🚀 Résumé du pipeline mono"
+            echo ""
+            echo "| Élément | Valeur |"
+            echo "|---|---|"
+            echo "| Application | ${APP_NAME} |"
+            echo "| Environnement | ${{ inputs.environment }} |"
+            echo "| Mode de déploiement | ${DEPLOY_MODE} |"
+            echo "| Build sauté (image déjà existante) | ${SKIP_BUILD:-false} |"
+            echo "| Type de base de données | ${DB_TYPE:-none} |"
+            if [ "${DEPLOY_MODE}" = "dual" ]; then
+              echo "| Image frontend | ${FRONT_LOCAL_IMAGE:-N/A} |"
+              echo "| Image backend | ${BACK_LOCAL_IMAGE:-N/A} |"
+            else
+              echo "| Image | ${LOCAL_IMAGE:-N/A} |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
