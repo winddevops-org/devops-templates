@@ -17,6 +17,7 @@ on:
 jobs:
   pipeline:
     runs-on: self-hosted
+    environment: ${{ inputs.environment }}
     timeout-minutes: 60
     services:
       postgres:
