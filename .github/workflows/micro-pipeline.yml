@@ -6,8 +6,15 @@ on:
       app_name:
         required: false
         type: string
+      environment:
+        required: true
+        type: string
     secrets:
       GITOPS_TOKEN:
+        required: true
+      ACR_USERNAME:
+        required: true
+      ACR_PASSWORD:
         required: true
 
 env:
