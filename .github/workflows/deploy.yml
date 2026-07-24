@@ -1,5 +1,4 @@
 name: Deploy Template Hybrid CI/CD
-
 on:
   workflow_call:
     inputs:
@@ -13,7 +12,6 @@ on:
         required: true
       ACR_PASSWORD:
         required: true
-
 jobs:
   detect:
     runs-on: self-hosted
@@ -24,9 +22,9 @@ jobs:
         run: |
           sudo git clean -ffdx 2>/dev/null || \
           sudo find "${{ github.workspace }}" -mindepth 1 -delete 2>/dev/null || true
-          
+
       - uses: actions/checkout@v4
-      
+
       - name: Detect mono vs micro
         id: detect
         run: |
@@ -36,7 +34,6 @@ jobs:
             case "${dir}" in frontend|backend|.github|.git|node_modules|target|dist|docs|scripts|config|helm|k8s) continue ;; esac
             [ -f "${dir}/Dockerfile" ] && SERVICE_COUNT_ROOT=$((SERVICE_COUNT_ROOT + 1))
           done
-
           SERVICE_COUNT_BACKEND=0
           if [ -d "backend" ]; then
             for dir in backend/*/; do
@@ -45,24 +42,35 @@ jobs:
               [ -f "backend/${dir}/Dockerfile" ] && SERVICE_COUNT_BACKEND=$((SERVICE_COUNT_BACKEND + 1))
             done
           fi
-
           TOTAL_SERVICES=$((SERVICE_COUNT_ROOT + SERVICE_COUNT_BACKEND))
           HAS_CLASSIC="false"
           { [ -f "frontend/Dockerfile" ] || [ -f "Dockerfile.frontend" ] || \
             [ -f "backend/Dockerfile" ] || [ -f "Dockerfile.backend" ] || \
             [ -f "Dockerfile" ]; } && HAS_CLASSIC="true"
-
           echo " Total services: ${TOTAL_SERVICES}, Classic: ${HAS_CLASSIC}"
-
           if [ "${TOTAL_SERVICES}" -ge 2 ] && [ "${HAS_CLASSIC}" = "false" ]; then
-            echo "mode=micro" >> "$GITHUB_OUTPUT"
+            MODE="micro"
           else
-            echo "mode=mono" >> "$GITHUB_OUTPUT"
+            MODE="mono"
           fi
+          echo "mode=${MODE}" >> "$GITHUB_OUTPUT"
 
+          {
+            echo "## 🔍 Détection du mode de déploiement"
+            echo ""
+            echo "| Élément | Valeur |"
+            echo "|---|---|"
+            echo "| Services détectés à la racine | ${SERVICE_COUNT_ROOT} |"
+            echo "| Services détectés dans backend/ | ${SERVICE_COUNT_BACKEND} |"
+            echo "| Total services | ${TOTAL_SERVICES} |"
+            echo "| Structure classique (Dockerfile) | ${HAS_CLASSIC} |"
+            echo "| **Mode choisi** | **${MODE}** |"
+            echo "| Environnement cible | ${{ inputs.environment }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
   mono:
     needs: detect
     if: needs.detect.outputs.mode == 'mono'
+    environment: ${{ inputs.environment }}
     uses: winddevops-org/devops-templates/.github/workflows/mono-pipeline.yml@main
     with:
       environment: ${{ inputs.environment }}
@@ -70,10 +78,10 @@ jobs:
       GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
       ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
       ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
-
   micro:
     needs: detect
     if: needs.detect.outputs.mode == 'micro'
+    environment: ${{ inputs.environment }}
     uses: winddevops-org/devops-templates/.github/workflows/micro-pipeline.yml@main
     with:
       environment: ${{ inputs.environment }}
