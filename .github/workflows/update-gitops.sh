@@ -21,6 +21,15 @@ else
   REPLICA_COUNT=1
 fi
 
+echo "=================================================="
+echo "🚀 Mise à jour GitOps"
+echo "   App          : ${APP_NAME}"
+echo "   Environnement: ${ENV}"
+echo "   Registre     : ${REGISTRY}"
+echo "   Replicas     : ${REPLICA_COUNT}"
+echo "   DB type      : ${DB_TYPE:-none}"
+echo "=================================================="
+
 GITOPS_REPO="https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git"
 
 git clone "${GITOPS_REPO}" gitops-environments
@@ -244,8 +253,31 @@ esac
 git add .
 if git diff --cached --quiet; then
   echo "Rien a commiter."
+  if [ -n "${GITHUB_STEP_SUMMARY}" ]; then
+    {
+      echo ""
+      echo "## 📦 Mise à jour GitOps"
+      echo "ℹ️ Aucun changement détecté pour **${ENV}** — rien à commiter."
+    } >> "$GITHUB_STEP_SUMMARY"
+  fi
   exit 0
 fi
 git commit -m "${COMMIT_MSG}"
 git pull --rebase origin main
 git push origin main
+
+echo "✅ GitOps mis à jour avec succès pour l'environnement '${ENV}'"
+if [ -n "${GITHUB_STEP_SUMMARY}" ]; then
+  {
+    echo ""
+    echo "## 📦 Mise à jour GitOps"
+    echo ""
+    echo "| Élément | Valeur |"
+    echo "|---|---|"
+    echo "| Environnement | ${ENV} |"
+    echo "| Registre | ${REGISTRY} |"
+    echo "| Mode | ${DEPLOY_MODE} |"
+    echo "| DB | ${DB_TYPE:-none} |"
+    echo "| Commit | ${COMMIT_MSG} |"
+  } >> "$GITHUB_STEP_SUMMARY"
+fi
