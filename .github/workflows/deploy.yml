@@ -70,7 +70,6 @@ jobs:
   mono:
     needs: detect
     if: needs.detect.outputs.mode == 'mono'
-    environment: ${{ inputs.environment }}
     uses: winddevops-org/devops-templates/.github/workflows/mono-pipeline.yml@main
     with:
       environment: ${{ inputs.environment }}
@@ -81,7 +80,6 @@ jobs:
   micro:
     needs: detect
     if: needs.detect.outputs.mode == 'micro'
-    environment: ${{ inputs.environment }}
     uses: winddevops-org/devops-templates/.github/workflows/micro-pipeline.yml@main
     with:
       environment: ${{ inputs.environment }}
