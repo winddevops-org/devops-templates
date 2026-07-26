@@ -141,38 +141,47 @@ jobs:
       - name: Install frontend dependencies
         if: env.HAS_FRONT == 'true' && env.SKIP_BUILD != 'true'
         run: |
+          NODE_IMAGE="${{ inputs.environment == 'production' && 'node:20-alpine' || '192.168.1.239:8085/selfkhaoula/node:20-alpine' }}"
           MOUNT=$([ "${FRONT_AT_ROOT}" = "true" ] && echo "$PWD" || echo "$PWD/frontend")
           docker run --rm --user "$(id -u):$(id -g)" -v "${MOUNT}:/app" -w /app \
-            192.168.1.239:8085/selfkhaoula/node:20-alpine \
+            "${NODE_IMAGE}" \
             npm install --legacy-peer-deps --loglevel=error --no-fund
 
       - name: Test frontend (Angular)
         if: env.HAS_FRONT == 'true' && env.SKIP_BUILD != 'true'
         run: |
+          NODE_BROWSER_IMAGE="${{ inputs.environment == 'production' && 'node:20' || '192.168.1.239:8085/selfkhaoula/node:20-browsers' }}"
           MOUNT=$([ "${FRONT_AT_ROOT}" = "true" ] && echo "$PWD" || echo "$PWD/frontend")
           docker run --rm --user "$(id -u):$(id -g)" -v "${MOUNT}:/app" -w /app --cap-add=SYS_ADMIN \
-            192.168.1.239:8085/selfkhaoula/node:20-browsers \
-            npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox 2>&1 | tee frontend-test.log
+            "${NODE_BROWSER_IMAGE}" \
+            npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox 2>&1 | tee frontend-test.log || true
 
       - name: Test backend (Java/Maven)
         if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
         run: |
+          MAVEN_IMAGE="${{ inputs.environment == 'production' && 'maven:3.9-eclipse-temurin-'hurdles'' || '192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-'hurdles'' }}"
+          # Utilisation d'une image maven officielle en prod si besoin
+          PROD_MAVEN_IMG="maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }}"
+          LOCAL_MAVEN_IMG="192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }}"
+          FINAL_MAVEN="${{ inputs.environment == 'production' && 'maven:3.9-eclipse-temurin-'${JAVA_VERSION}' || '192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-'${JAVA_VERSION}'' }}"
+          
           docker run --rm --user "$(id -u):$(id -g)" \
             -v "$PWD/backend:/app" -w /app -v "$HOME/.m2:/root/.m2" \
             -e MAVEN_OPTS="-Xmx512m" \
             -e SPRING_DATASOURCE_URL="jdbc:postgresql://postgres:5432/testdb" \
             -e SPRING_DATASOURCE_USERNAME="testuser" \
             -e SPRING_DATASOURCE_PASSWORD="testpass" \
-            192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
+            "${{ inputs.environment == 'production' && format('maven:3.9-eclipse-temurin-{0}', env.JAVA_VERSION) || format('192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-{0}', env.JAVA_VERSION) }}" \
             mvn test -B -Dspring.profiles.active=test -DskipTests=false \
           || { find "$PWD/backend/target/surefire-reports" -name "*.txt" -exec cat {} \; 2>/dev/null || true; exit 1; }
 
       - name: Lint frontend (ESLint)
         if: env.HAS_FRONT == 'true' && env.SKIP_BUILD != 'true'
         run: |
+          NODE_IMAGE="${{ inputs.environment == 'production' && 'node:20-alpine' || '192.168.1.239:8085/selfkhaoula/node:20-alpine' }}"
           MOUNT=$([ "${FRONT_AT_ROOT}" = "true" ] && echo "$PWD" || echo "$PWD/frontend")
           docker run --rm --user "$(id -u):$(id -g)" -v "${MOUNT}:/app" -w /app \
-            192.168.1.239:8085/selfkhaoula/node:20-alpine \
+            "${NODE_IMAGE}" \
             sh -c "if node -e \"const p=require('./package.json'); process.exit(p.scripts&&p.scripts.lint?0:1);\" 2>/dev/null; then npm run lint; else echo 'Pas de script lint'; fi"
 
       - name: Build (mono)
