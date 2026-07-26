@@ -12,22 +12,25 @@ DB_TYPE="${DB_TYPE}"
 DEPLOY_MODE="${DEPLOY_MODE}"
 ENV="${ENV:-staging}"
 
-# Sélection dynamique du registre
+# Sélection dynamique du registre et du secret de tirage d'image
 if [ "${ENV}" = "production" ]; then
   REGISTRY="windazureacr.azurecr.io"
   REPLICA_COUNT=2
+  IMAGE_PULL_SECRET="azureacr-secret"
 else
   REGISTRY="192.168.1.239:8085/selfkhaoula"
   REPLICA_COUNT=1
+  IMAGE_PULL_SECRET="nexus-registry-secret"
 fi
 
 echo "=================================================="
 echo "🚀 Mise à jour GitOps"
-echo "   App          : ${APP_NAME}"
+echo "   App         : ${APP_NAME}"
 echo "   Environnement: ${ENV}"
-echo "   Registre     : ${REGISTRY}"
-echo "   Replicas     : ${REPLICA_COUNT}"
-echo "   DB type      : ${DB_TYPE:-none}"
+echo "   Registre      : ${REGISTRY}"
+echo "   Replicas      : ${REPLICA_COUNT}"
+echo "   Pull Secret   : ${IMAGE_PULL_SECRET}"
+echo "   DB type       : ${DB_TYPE:-none}"
 echo "=================================================="
 
 GITOPS_REPO="https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git"
@@ -61,7 +64,7 @@ image:
   tag: "${TAG}"
   pullPolicy: IfNotPresent
 imagePullSecrets:
-  - name: nexus-registry-secret
+  - name: ${IMAGE_PULL_SECRET}
 service:
   type: ClusterIP
   port: 80
@@ -104,6 +107,7 @@ VALEOF
     sed -i "s|repository:.*|repository: \"${REPO}\"|" "${VPATH}"
     sed -i "s|tag:.*|tag: \"${TAG}\"|" "${VPATH}"
     sed -i "s|replicaCount:.*|replicaCount: ${REPLICA_COUNT}|" "${VPATH}"
+    sed -i "s|name: nexus-registry-secret|name: ${IMAGE_PULL_SECRET}|" "${VPATH}" || true
     echo "values-${COMPONENT}.yaml mis a jour pour ${COMP}"
   fi
 }
