@@ -144,6 +144,7 @@ jobs:
           NODE_IMAGE="${{ inputs.environment == 'production' && 'node:20-alpine' || '192.168.1.239:8085/selfkhaoula/node:20-alpine' }}"
           MOUNT=$([ "${FRONT_AT_ROOT}" = "true" ] && echo "$PWD" || echo "$PWD/frontend")
           docker run --rm --user "$(id -u):$(id -g)" -v "${MOUNT}:/app" -w /app \
+            -e npm_config_cache=/tmp/.npm \
             "${NODE_IMAGE}" \
             npm install --legacy-peer-deps --loglevel=error --no-fund
 
