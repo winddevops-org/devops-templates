@@ -16,7 +16,7 @@ on:
 
 jobs:
   pipeline:
-    runs-on: self-hosted
+    runs-on: ${{ inputs.environment == 'production' && 'ubuntu-latest' || 'self-hosted' }}
     environment: ${{ inputs.environment }}
     timeout-minutes: 60
     services:
