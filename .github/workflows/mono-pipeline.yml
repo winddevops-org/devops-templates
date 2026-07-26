@@ -70,7 +70,7 @@ jobs:
           [ "${HAS_FRONT}" = "true" ] && [ -f "package.json" ] && [ -f "angular.json" ] && FRONT_AT_ROOT="true"
 
           if [ -f "backend/Dockerfile" ]; then HAS_BACK="true"; BACK_FILE="backend/Dockerfile"; BACK_CONTEXT="backend"
-          elif [ -f "Dockerfile.backend" ]; then HAS_BACK="true"; BACK_FILE="Dockerfile.backend"; BACK_CONTEXT="."; fi
+          elif [ -f "Dockerfile.backend" ]; then HAS_BACK="true"; BACK_FILE="Dockerfile.backend"; FRONT_CONTEXT="."; fi
 
           if [ "${HAS_FRONT}" = "true" ] && [ "${HAS_BACK}" = "true" ]; then DEPLOY_MODE="dual"
           elif [ "${HAS_FRONT}" = "true" ]; then DEPLOY_MODE="front-only"
@@ -107,8 +107,8 @@ jobs:
             echo "${{ secrets.ACR_PASSWORD }}" | docker login windazureacr.azurecr.io -u ${{ secrets.ACR_USERNAME }} --password-stdin
           else
             sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
-            sudo cp /home/ubuntu/nexus/certs/nexus.crt /etc/docker/certs.d/192.168.1.239:8085/ca.crt
-            sudo update-ca-certificates
+            sudo cp /home/ubuntu/nexus/certs/nexus.crt /etc/docker/certs.d/192.168.1.239:8085/ca.crt || true
+            sudo update-ca-certificates || true
             echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
           fi
 
@@ -157,10 +157,10 @@ jobs:
       - name: Test backend (Java/Maven)
         if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
         run: |
-          docker run --rm --network host --user "$(id -u):$(id -g)" \
+          docker run --rm --user "$(id -u):$(id -g)" \
             -v "$PWD/backend:/app" -w /app -v "$HOME/.m2:/root/.m2" \
             -e MAVEN_OPTS="-Xmx512m" \
-            -e SPRING_DATASOURCE_URL="jdbc:postgresql://localhost:5432/testdb" \
+            -e SPRING_DATASOURCE_URL="jdbc:postgresql://postgres:5432/testdb" \
             -e SPRING_DATASOURCE_USERNAME="testuser" \
             -e SPRING_DATASOURCE_PASSWORD="testpass" \
             192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
