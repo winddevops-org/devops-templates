@@ -159,19 +159,15 @@ jobs:
       - name: Test backend (Java/Maven)
         if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
         run: |
-          MAVEN_IMAGE="${{ inputs.environment == 'production' && 'maven:3.9-eclipse-temurin-'hurdles'' || '192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-'hurdles'' }}"
-          # Utilisation d'une image maven officielle en prod si besoin
-          PROD_MAVEN_IMG="maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }}"
-          LOCAL_MAVEN_IMG="192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }}"
-          FINAL_MAVEN="${{ inputs.environment == 'production' && 'maven:3.9-eclipse-temurin-'${JAVA_VERSION}' || '192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-'${JAVA_VERSION}'' }}"
-          
+          MAVEN_IMAGE="${{ inputs.environment == 'production' && format('maven:3.9-eclipse-temurin-{0}', env.JAVA_VERSION) || format('192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-{0}', env.JAVA_VERSION) }}"
+
           docker run --rm --user "$(id -u):$(id -g)" \
             -v "$PWD/backend:/app" -w /app -v "$HOME/.m2:/root/.m2" \
             -e MAVEN_OPTS="-Xmx512m" \
             -e SPRING_DATASOURCE_URL="jdbc:postgresql://postgres:5432/testdb" \
             -e SPRING_DATASOURCE_USERNAME="testuser" \
             -e SPRING_DATASOURCE_PASSWORD="testpass" \
-            "${{ inputs.environment == 'production' && format('maven:3.9-eclipse-temurin-{0}', env.JAVA_VERSION) || format('192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-{0}', env.JAVA_VERSION) }}" \
+            "${MAVEN_IMAGE}" \
             mvn test -B -Dspring.profiles.active=test -DskipTests=false \
           || { find "$PWD/backend/target/surefire-reports" -name "*.txt" -exec cat {} \; 2>/dev/null || true; exit 1; }
 
