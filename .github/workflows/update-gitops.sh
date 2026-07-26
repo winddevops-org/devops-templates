@@ -25,12 +25,12 @@ fi
 
 echo "=================================================="
 echo "🚀 Mise à jour GitOps"
-echo "   App         : ${APP_NAME}"
-echo "   Environnement: ${ENV}"
-echo "   Registre      : ${REGISTRY}"
-echo "   Replicas      : ${REPLICA_COUNT}"
-echo "   Pull Secret   : ${IMAGE_PULL_SECRET}"
-echo "   DB type       : ${DB_TYPE:-none}"
+echo "    App         : ${APP_NAME}"
+echo "    Environnement: ${ENV}"
+echo "    Registre       : ${REGISTRY}"
+echo "    Replicas       : ${REPLICA_COUNT}"
+echo "    Pull Secret    : ${IMAGE_PULL_SECRET}"
+echo "    DB type        : ${DB_TYPE:-none}"
 echo "=================================================="
 
 GITOPS_REPO="https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git"
@@ -163,9 +163,16 @@ write_argocd() {
   local COMP="$1"
   local BASE_NAME=$(get_base_name "${COMP}")
   local COMPONENT="${COMP##*-}"
-  local APATH="argocd-applications/${COMP}-${ENV}.yaml"
   
-  mkdir -p argocd-applications
+  # Sélection dynamique du dossier selon l'environnement
+  local TARGET_DIR="argocd-applications"
+  if [ "${ENV}" = "production" ]; then
+    TARGET_DIR="argocd-applications-prod"
+  fi
+
+  local APATH="${TARGET_DIR}/${COMP}-${ENV}.yaml"
+  
+  mkdir -p "${TARGET_DIR}"
   [ -f "${APATH}" ] && return 0
   
   cat > "${APATH}" <<ARGOEOF
@@ -196,7 +203,7 @@ spec:
     syncOptions:
       - CreateNamespace=true
 ARGOEOF
-  echo "ArgoCD Application creee pour ${COMP} dans namespace ${ENV}-${BASE_NAME}"
+  echo "ArgoCD Application creee pour ${COMP} dans ${TARGET_DIR} (namespace ${ENV}-${BASE_NAME})"
 }
 
 if [ -z "${DEPLOY_MODE}" ]; then
