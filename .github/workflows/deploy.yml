@@ -22,9 +22,7 @@ jobs:
         run: |
           sudo git clean -ffdx 2>/dev/null || \
           sudo find "${{ github.workspace }}" -mindepth 1 -delete 2>/dev/null || true
-
       - uses: actions/checkout@v4
-
       - name: Detect mono vs micro
         id: detect
         run: |
@@ -43,18 +41,31 @@ jobs:
             done
           fi
           TOTAL_SERVICES=$((SERVICE_COUNT_ROOT + SERVICE_COUNT_BACKEND))
-          HAS_CLASSIC="false"
-          { [ -f "frontend/Dockerfile" ] || [ -f "Dockerfile.frontend" ] || \
-            [ -f "backend/Dockerfile" ] || [ -f "Dockerfile.backend" ] || \
-            [ -f "Dockerfile" ]; } && HAS_CLASSIC="true"
-          echo " Total services: ${TOTAL_SERVICES}, Classic: ${HAS_CLASSIC}"
-          if [ "${TOTAL_SERVICES}" -ge 2 ] && [ "${HAS_CLASSIC}" = "false" ]; then
+
+          # HAS_DUAL : vrai uniquement si frontend ET backend sont TOUS LES DEUX présents
+          # (remplace l'ancien HAS_CLASSIC qui était trop large et capturait aussi
+          # les repos mono-service, forçant "mono" à tort)
+          HAS_DUAL="false"
+          { { [ -f "frontend/Dockerfile" ] || [ -f "Dockerfile.frontend" ]; } && \
+            { [ -f "backend/Dockerfile" ]  || [ -f "Dockerfile.backend" ];  }; } && HAS_DUAL="true"
+
+          # FIX : un Dockerfile seul à la racine (repo mono-service, ex: front seul)
+          # compte désormais comme 1 service quand ce n'est pas un cas dual.
+          if [ "${HAS_DUAL}" = "false" ] && [ -f "Dockerfile" ] && [ "${TOTAL_SERVICES}" -eq 0 ]; then
+            TOTAL_SERVICES=1
+          fi
+
+          echo " Total services: ${TOTAL_SERVICES}, Dual: ${HAS_DUAL}"
+
+          if [ "${HAS_DUAL}" = "true" ]; then
+            MODE="mono"
+          elif [ "${TOTAL_SERVICES}" -ge 1 ]; then
             MODE="micro"
           else
             MODE="mono"
           fi
-          echo "mode=${MODE}" >> "$GITHUB_OUTPUT"
 
+          echo "mode=${MODE}" >> "$GITHUB_OUTPUT"
           {
             echo "## 🔍 Détection du mode de déploiement"
             echo ""
@@ -63,7 +74,7 @@ jobs:
             echo "| Services détectés à la racine | ${SERVICE_COUNT_ROOT} |"
             echo "| Services détectés dans backend/ | ${SERVICE_COUNT_BACKEND} |"
             echo "| Total services | ${TOTAL_SERVICES} |"
-            echo "| Structure classique (Dockerfile) | ${HAS_CLASSIC} |"
+            echo "| Structure dual (frontend + backend) | ${HAS_DUAL} |"
             echo "| **Mode choisi** | **${MODE}** |"
             echo "| Environnement cible | ${{ inputs.environment }} |"
           } >> "$GITHUB_STEP_SUMMARY"
