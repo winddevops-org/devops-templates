@@ -287,7 +287,15 @@ jobs:
             -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
             -w /app \
             192.168.1.239:8085/selfkhaoula/node:20-browsers \
-            sh -c "npm ci --legacy-peer-deps && npx ng build --configuration production"
+            sh -c "
+              npm ci --legacy-peer-deps && \
+              if ! npm ls @angular/animations >/dev/null 2>&1; then
+                CORE_VERSION=\$(node -p \"require('./node_modules/@angular/core/package.json').version\");
+                echo \"@angular/animations manquant, installation de la version \$CORE_VERSION pour matcher @angular/core\";
+                npm install @angular/animations@\$CORE_VERSION --no-save --legacy-peer-deps;
+              fi && \
+              npx ng build --configuration production
+            "
 
       - name: Build Docker image
         if: env.SKIP_BUILD != 'true'
