@@ -104,12 +104,22 @@ jobs:
       - name: Setup Docker Credentials
         run: |
           if [ "${{ inputs.environment }}" = "production" ]; then
-            echo "${{ secrets.ACR_PASSWORD }}" | docker login ${{ vars.ACR_LOGIN_SERVER }} -u ${{ secrets.ACR_USERNAME }} --password-stdin
+            echo "Verifying variables..."
+            echo "ACR_LOGIN_SERVER is set: $([ -n "${{ vars.ACR_LOGIN_SERVER }}" ] && echo 'yes' || echo 'NO - THIS IS THE PROBLEM')"
+            echo "ACR_USERNAME is set: $([ -n "${{ secrets.ACR_USERNAME }}" ] && echo 'yes' || echo 'NO - THIS IS THE PROBLEM')"
+            echo "ACR_PASSWORD is set: $([ -n "${{ secrets.ACR_PASSWORD }}" ] && echo 'yes' || echo 'NO - THIS IS THE PROBLEM')"
+            
+            if [ -z "${{ vars.ACR_LOGIN_SERVER }}" ] || [ -z "${{ secrets.ACR_USERNAME }}" ] || [ -z "${{ secrets.ACR_PASSWORD }}" ]; then
+              echo "ERROR: One or more required variables/secrets are missing!"
+              exit 1
+            fi
+            
+            printf "%s" "${{ secrets.ACR_PASSWORD }}" | docker login "${{ vars.ACR_LOGIN_SERVER }}" -u "${{ secrets.ACR_USERNAME }}" --password-stdin
           else
             sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
             sudo cp /home/ubuntu/nexus/certs/nexus.crt /etc/docker/certs.d/192.168.1.239:8085/ca.crt || true
             sudo update-ca-certificates || true
-            echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
+            printf "%s" "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
           fi
 
       - name: Verifier si l'image existe deja
