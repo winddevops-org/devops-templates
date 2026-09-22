@@ -277,7 +277,7 @@ git commit -m "${COMMIT_MSG}"
 git pull --rebase origin main
 git push origin main
 
-echo "✅ GitOps mis à jour avec succès pour l'environnement '${ENV}'"
+echo " GitOps mis à jour avec succès pour l'environnement '${ENV}'"
 if [ -n "${GITHUB_STEP_SUMMARY}" ]; then
   {
     echo ""
