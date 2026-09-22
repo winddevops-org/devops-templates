@@ -76,7 +76,7 @@ jobs:
           elif [ "${HAS_FRONT}" = "true" ]; then DEPLOY_MODE="front-only"
           elif [ "${HAS_BACK}" = "true" ]; then DEPLOY_MODE="back-only"
           elif [ -f "Dockerfile" ]; then DEPLOY_MODE="mono"; MONO_FILE="Dockerfile"
-          else echo "Aucun Dockerfile trouvé."; exit 1; fi
+          else echo "Aucun Dockerfile trouve."; exit 1; fi
 
           echo "DEPLOY_MODE=${DEPLOY_MODE}" >> "$GITHUB_ENV"
           echo "HAS_FRONT=${HAS_FRONT}" >> "$GITHUB_ENV"
@@ -104,7 +104,7 @@ jobs:
       - name: Setup Docker Credentials
         run: |
           if [ "${{ inputs.environment }}" = "production" ]; then
-            echo "${{ secrets.ACR_PASSWORD }}" | docker login windazureacr.azurecr.io -u ${{ secrets.ACR_USERNAME }} --password-stdin
+            echo "${{ secrets.ACR_PASSWORD }}" | docker login ${{ vars.ACR_LOGIN_SERVER }} -u ${{ secrets.ACR_USERNAME }} --password-stdin
           else
             sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
             sudo cp /home/ubuntu/nexus/certs/nexus.crt /etc/docker/certs.d/192.168.1.239:8085/ca.crt || true
@@ -112,10 +112,10 @@ jobs:
             echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
           fi
 
-      - name: Vérifier si l'image existe déjà
+      - name: Verifier si l'image existe deja
         id: check_image
         run: |
-          REGISTRY="${{ inputs.environment == 'production' && 'windazureacr.azurecr.io' || '192.168.1.239:8085/selfkhaoula' }}"
+          REGISTRY="${{ inputs.environment == 'production' && vars.ACR_LOGIN_SERVER || '192.168.1.239:8085/selfkhaoula' }}"
           SKIP="false"
           
           if [ "${DEPLOY_MODE}" = "dual" ]; then
@@ -171,6 +171,7 @@ jobs:
             "${MAVEN_IMAGE}" \
             mvn test -B -Dspring.profiles.active=test -DskipTests=false \
           || { find "$PWD/backend/target/surefire-reports" -name "*.txt" -exec cat {} \; 2>/dev/null || true; exit 1; }
+          
       - name: Lint frontend (ESLint)
         if: env.HAS_FRONT == 'true' && env.SKIP_BUILD != 'true'
         run: |
@@ -183,7 +184,7 @@ jobs:
       - name: Build (mono)
         if: env.DEPLOY_MODE == 'mono' && env.SKIP_BUILD != 'true'
         run: |
-          REGISTRY="${{ inputs.environment == 'production' && 'windazureacr.azurecr.io' || '192.168.1.239:8085/selfkhaoula' }}"
+          REGISTRY="${{ inputs.environment == 'production' && vars.ACR_LOGIN_SERVER || '192.168.1.239:8085/selfkhaoula' }}"
           IMAGE="${REGISTRY}/${APP_NAME}:${{ github.sha }}"
           docker build -f "${MONO_FILE}" -t "${IMAGE}" .
           echo "LOCAL_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
@@ -191,7 +192,7 @@ jobs:
       - name: Build (dual front)
         if: env.DEPLOY_MODE == 'dual' && env.SKIP_BUILD != 'true'
         run: |
-          REGISTRY="${{ inputs.environment == 'production' && 'windazureacr.azurecr.io' || '192.168.1.239:8085/selfkhaoula' }}"
+          REGISTRY="${{ inputs.environment == 'production' && vars.ACR_LOGIN_SERVER || '192.168.1.239:8085/selfkhaoula' }}"
           IMAGE="${REGISTRY}/${APP_NAME}-front:${{ github.sha }}"
           docker build -f "${FRONT_FILE}" -t "${IMAGE}" "${FRONT_CONTEXT}"
           echo "FRONT_LOCAL_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
@@ -199,7 +200,7 @@ jobs:
       - name: Build (dual back)
         if: env.DEPLOY_MODE == 'dual' && env.SKIP_BUILD != 'true'
         run: |
-          REGISTRY="${{ inputs.environment == 'production' && 'windazureacr.azurecr.io' || '192.168.1.239:8085/selfkhaoula' }}"
+          REGISTRY="${{ inputs.environment == 'production' && vars.ACR_LOGIN_SERVER || '192.168.1.239:8085/selfkhaoula' }}"
           IMAGE="${REGISTRY}/${APP_NAME}-back:${{ github.sha }}"
           docker build -f "${BACK_FILE}" -t "${IMAGE}" "${BACK_CONTEXT}"
           echo "BACK_LOCAL_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
@@ -225,13 +226,13 @@ jobs:
           fi
           for IMAGE in "${IMAGES[@]}"; do
             CONTAINER_ID=$(docker run -d --rm "${IMAGE}" 2>/dev/null || true)
-            [ -z "${CONTAINER_ID}" ] && echo "Container non démarré" && exit 1
+            [ -z "${CONTAINER_ID}" ] && echo "Container non demarre" && exit 1
             sleep 5
             STATUS=$(docker inspect --format='{{.State.Status}}' "${CONTAINER_ID}" 2>/dev/null || echo "gone")
             if [ "${STATUS}" = "exited" ]; then
               EXIT_CODE=$(docker inspect --format='{{.State.ExitCode}}' "${CONTAINER_ID}" 2>/dev/null || echo "1")
               docker logs "${CONTAINER_ID}" 2>/dev/null || true
-              [ "${EXIT_CODE}" != "0" ] && echo "Smoke test échoué (exit ${EXIT_CODE})" && exit 1
+              [ "${EXIT_CODE}" != "0" ] && echo "Smoke test echoue (exit ${EXIT_CODE})" && exit 1
             fi
             docker stop "${CONTAINER_ID}" 2>/dev/null || true
           done
@@ -254,24 +255,24 @@ jobs:
           DB_TYPE: ${{ env.DB_TYPE }}
           DEPLOY_MODE: ${{ env.DEPLOY_MODE }}
           ENV: ${{ inputs.environment }}
-          REGISTRY: ${{ inputs.environment == 'production' && 'windazureacr.azurecr.io' || '192.168.1.239:8085/selfkhaoula' }}
+          REGISTRY: ${{ inputs.environment == 'production' && vars.ACR_LOGIN_SERVER || '192.168.1.239:8085/selfkhaoula' }}
         run: |
           chmod +x devops-templates/.github/workflows/update-gitops.sh
           devops-templates/.github/workflows/update-gitops.sh
 
-      - name: Résumé du pipeline
+      - name: Resume du pipeline
         if: always()
         run: |
           {
-            echo "## 🚀 Résumé du pipeline mono"
+            echo "## Resume du pipeline mono"
             echo ""
-            echo "| Élément | Valeur |"
+            echo "| Element | Valeur |"
             echo "|---|---|"
             echo "| Application | ${APP_NAME} |"
             echo "| Environnement | ${{ inputs.environment }} |"
-            echo "| Mode de déploiement | ${DEPLOY_MODE} |"
-            echo "| Build sauté (image déjà existante) | ${SKIP_BUILD:-false} |"
-            echo "| Type de base de données | ${DB_TYPE:-none} |"
+            echo "| Mode de deploiement | ${DEPLOY_MODE} |"
+            echo "| Build saute (image deja existante) | ${SKIP_BUILD:-false} |"
+            echo "| Type de base de donnees | ${DB_TYPE:-none} |"
             if [ "${DEPLOY_MODE}" = "dual" ]; then
               echo "| Image frontend | ${FRONT_LOCAL_IMAGE:-N/A} |"
               echo "| Image backend | ${BACK_LOCAL_IMAGE:-N/A} |"
