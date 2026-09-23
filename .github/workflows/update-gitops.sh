@@ -12,6 +12,9 @@ DB_TYPE="${DB_TYPE}"
 DEPLOY_MODE="${DEPLOY_MODE}"
 ENV="${ENV:-staging}"
 
+# NOUVEAU : Domaine personnalisé pour l'Ingress (uniquement utilisé en production)
+INGRESS_DOMAIN="${INGRESS_DOMAIN:-}"
+
 # Sélection dynamique du registre et du secret de tirage d'image
 if [ "${ENV}" = "production" ]; then
   REGISTRY="windazureacr.azurecr.io"
@@ -23,14 +26,30 @@ else
   IMAGE_PULL_SECRET="nexus-registry-secret"
 fi
 
+# Définition de l'host Ingress selon l'environnement (Staging intact)
+if [ "${ENV}" = "production" ] && [ -n "${INGRESS_DOMAIN}" ]; then
+    INGRESS_HOST="${COMP}.${INGRESS_DOMAIN}" # Sera défini dynamiquement dans write_values
+else
+    INGRESS_HOST_TEMPLATE="${ENV}.local" # Staging garde son .local
+fi
+
+# Définition des URLs de dépôts selon l'environnement (Staging garde le HTTPS)
+if [ "${ENV}" = "production" ]; then
+    TEMPLATES_URL="git@github.com:winddevops-org/devops-templates.git"
+    ENVIRONMENTS_URL="git@github.com:winddevops-org/gitops-environments.git"
+else
+    TEMPLATES_URL="https://github.com/winddevops-org/devops-templates"
+    ENVIRONMENTS_URL="https://github.com/winddevops-org/gitops-environments"
+fi
+
 echo "=================================================="
 echo "🚀 Mise à jour GitOps"
 echo "    App         : ${APP_NAME}"
 echo "    Environnement: ${ENV}"
-echo "    Registre       : ${REGISTRY}"
-echo "    Replicas       : ${REPLICA_COUNT}"
-echo "    Pull Secret    : ${IMAGE_PULL_SECRET}"
-echo "    DB type        : ${DB_TYPE:-none}"
+echo "    Registre    : ${REGISTRY}"
+echo "    Replicas    : ${REPLICA_COUNT}"
+echo "    Pull Secret : ${IMAGE_PULL_SECRET}"
+echo "    DB type     : ${DB_TYPE:-none}"
 echo "=================================================="
 
 GITOPS_REPO="https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git"
@@ -52,6 +71,14 @@ write_values() {
   local COMPONENT="${COMP##*-}"
   local VPATH="environments/${ENV}/${BASE_NAME}/values-${COMPONENT}.yaml"
   
+  # Calcul de l'host exact pour ce composant
+  local CURRENT_INGRESS_HOST
+  if [ "${ENV}" = "production" ] && [ -n "${INGRESS_DOMAIN}" ]; then
+      CURRENT_INGRESS_HOST="${COMP}.${INGRESS_DOMAIN}"
+  else
+      CURRENT_INGRESS_HOST="${COMP}.${ENV}.local"
+  fi
+
   mkdir -p "$(dirname "${VPATH}")"
   
   if [ ! -f "${VPATH}" ]; then
@@ -72,7 +99,7 @@ service:
 ingress:
   enabled: true
   className: nginx
-  host: ${COMP}.${ENV}.local
+  host: ${CURRENT_INGRESS_HOST}
   path: /
   pathType: Prefix
 resources:
@@ -108,6 +135,7 @@ VALEOF
     sed -i "s|tag:.*|tag: \"${TAG}\"|" "${VPATH}"
     sed -i "s|replicaCount:.*|replicaCount: ${REPLICA_COUNT}|" "${VPATH}"
     sed -i "s|name: nexus-registry-secret|name: ${IMAGE_PULL_SECRET}|" "${VPATH}" || true
+    sed -i "s|host:.*|host: ${CURRENT_INGRESS_HOST}|" "${VPATH}" || true
     echo "values-${COMPONENT}.yaml mis a jour pour ${COMP}"
   fi
 }
@@ -164,7 +192,6 @@ write_argocd() {
   local BASE_NAME=$(get_base_name "${COMP}")
   local COMPONENT="${COMP##*-}"
   
-  # Sélection dynamique du dossier selon l'environnement
   local TARGET_DIR="argocd-applications"
   if [ "${ENV}" = "production" ]; then
     TARGET_DIR="argocd-applications-prod"
@@ -184,13 +211,13 @@ metadata:
 spec:
   project: stagiaires
   sources:
-    - repoURL: https://github.com/winddevops-org/devops-templates
+    - repoURL: ${TEMPLATES_URL}
       targetRevision: main
       path: helm-charts/app-generic
       helm:
         valueFiles:
           - \$values/environments/${ENV}/${BASE_NAME}/values-${COMPONENT}.yaml
-    - repoURL: https://github.com/winddevops-org/gitops-environments
+    - repoURL: ${ENVIRONMENTS_URL}
       targetRevision: main
       ref: values
   destination:
@@ -267,8 +294,8 @@ if git diff --cached --quiet; then
   if [ -n "${GITHUB_STEP_SUMMARY}" ]; then
     {
       echo ""
-      echo "## 📦 Mise à jour GitOps"
-      echo "ℹ️ Aucun changement détecté pour **${ENV}** — rien à commiter."
+      echo "##  Mise à jour GitOps"
+      echo "️ Aucun changement détecté pour **${ENV}** — rien à commiter."
     } >> "$GITHUB_STEP_SUMMARY"
   fi
   exit 0
