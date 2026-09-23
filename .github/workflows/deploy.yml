@@ -1,17 +1,5 @@
-name: Deploy Router (Hybrid)
-
+name: Deploy Template Hybrid CI/CD
 on:
-  workflow_dispatch:
-    inputs:
-      environment:
-        description: 'Environnement cible pour le déploiement'
-        required: true
-        type: choice
-        default: 'staging'
-        options:
-          - staging
-          - production
-
   workflow_call:
     inputs:
       environment:
@@ -24,10 +12,9 @@ on:
         required: true
       ACR_PASSWORD:
         required: true
-
 jobs:
   detect:
-    runs-on: self-hosted
+    runs-on: ${{ inputs.environment == 'production' && 'ubuntu-latest' || 'self-hosted' }}
     outputs:
       mode: ${{ steps.detect.outputs.mode }}
     steps:
@@ -54,17 +41,18 @@ jobs:
             done
           fi
           TOTAL_SERVICES=$((SERVICE_COUNT_ROOT + SERVICE_COUNT_BACKEND))
-
+          # HAS_DUAL : vrai uniquement si frontend ET backend sont TOUS LES DEUX présents
+          # (remplace l'ancien HAS_CLASSIC qui était trop large et capturait aussi
+          # les repos mono-service, forçant "mono" à tort)
           HAS_DUAL="false"
           { { [ -f "frontend/Dockerfile" ] || [ -f "Dockerfile.frontend" ]; } && \
             { [ -f "backend/Dockerfile" ]  || [ -f "Dockerfile.backend" ];  }; } && HAS_DUAL="true"
-
+          # FIX : un Dockerfile seul à la racine (repo mono-service, ex: front seul)
+          # compte désormais comme 1 service quand ce n'est pas un cas dual.
           if [ "${HAS_DUAL}" = "false" ] && [ -f "Dockerfile" ] && [ "${TOTAL_SERVICES}" -eq 0 ]; then
             TOTAL_SERVICES=1
           fi
-
           echo " Total services: ${TOTAL_SERVICES}, Dual: ${HAS_DUAL}"
-
           if [ "${HAS_DUAL}" = "true" ]; then
             MODE="mono"
           elif [ "${TOTAL_SERVICES}" -ge 1 ]; then
@@ -72,9 +60,19 @@ jobs:
           else
             MODE="mono"
           fi
-
           echo "mode=${MODE}" >> "$GITHUB_OUTPUT"
-
+          {
+            echo "## 🔍 Détection du mode de déploiement"
+            echo ""
+            echo "| Élément | Valeur |"
+            echo "|---|---|"
+            echo "| Services détectés à la racine | ${SERVICE_COUNT_ROOT} |"
+            echo "| Services détectés dans backend/ | ${SERVICE_COUNT_BACKEND} |"
+            echo "| Total services | ${TOTAL_SERVICES} |"
+            echo "| Structure dual (frontend + backend) | ${HAS_DUAL} |"
+            echo "| **Mode choisi** | **${MODE}** |"
+            echo "| Environnement cible | ${{ inputs.environment }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
   mono:
     needs: detect
     if: needs.detect.outputs.mode == 'mono'
@@ -86,7 +84,6 @@ jobs:
       GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
       ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
       ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
-
   micro:
     needs: detect
     if: needs.detect.outputs.mode == 'micro'
