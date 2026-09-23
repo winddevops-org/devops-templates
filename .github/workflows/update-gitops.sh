@@ -14,7 +14,7 @@ ENV="${ENV:-staging}"
 INGRESS_DOMAIN="${INGRESS_DOMAIN:-}"
 
 if [ "${ENV}" = "production" ]; then
-  REGISTRY="windazureacr.azurecr.io"
+  REGISTRY="windazureacrch0s.azurecr.io"
   REPLICA_COUNT=2
   IMAGE_PULL_SECRET="azureacr-secret"
 else
