@@ -6,6 +6,9 @@ on:
       environment:
         required: true
         type: string
+      ingress_domain:
+        required: false
+        type: string
     secrets:
       GITOPS_TOKEN:
         required: true
@@ -104,13 +107,10 @@ jobs:
       - name: Setup Docker Credentials
         run: |
           if [ "${{ inputs.environment }}" = "production" ]; then
-            # Nettoyage automatique des retours à la ligne invisibles (\r et \n)
             CLEAN_SERVER=$(echo "${{ vars.ACR_LOGIN_SERVER }}" | tr -d '\r\n')
             CLEAN_USER=$(echo "${{ secrets.ACR_USERNAME }}" | tr -d '\r\n')
             CLEAN_PASS=$(echo "${{ secrets.ACR_PASSWORD }}" | tr -d '\r\n')
-            
             echo "Connexion au registry : $CLEAN_SERVER"
-            
             printf "%s" "$CLEAN_PASS" | docker login "$CLEAN_SERVER" -u "$CLEAN_USER" --password-stdin
           else
             sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
@@ -263,6 +263,7 @@ jobs:
           DEPLOY_MODE: ${{ env.DEPLOY_MODE }}
           ENV: ${{ inputs.environment }}
           REGISTRY: ${{ inputs.environment == 'production' && vars.ACR_LOGIN_SERVER || '192.168.1.239:8085/selfkhaoula' }}
+          INGRESS_DOMAIN: ${{ inputs.ingress_domain }}
         run: |
           chmod +x devops-templates/.github/workflows/update-gitops.sh
           devops-templates/.github/workflows/update-gitops.sh
