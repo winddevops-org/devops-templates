@@ -49,11 +49,17 @@ jobs:
             { [ -f "backend/Dockerfile" ]  || [ -f "Dockerfile.backend" ];  }; } && HAS_DUAL="true"
           # FIX : un Dockerfile seul à la racine (repo mono-service, ex: front seul)
           # compte désormais comme 1 service quand ce n'est pas un cas dual.
+          ROOT_DOCKERFILE_ONLY="false"
           if [ "${HAS_DUAL}" = "false" ] && [ -f "Dockerfile" ] && [ "${TOTAL_SERVICES}" -eq 0 ]; then
             TOTAL_SERVICES=1
+            ROOT_DOCKERFILE_ONLY="true"
           fi
-          echo " Total services: ${TOTAL_SERVICES}, Dual: ${HAS_DUAL}"
+          echo " Total services: ${TOTAL_SERVICES}, Dual: ${HAS_DUAL}, RootOnly: ${ROOT_DOCKERFILE_ONLY}"
           if [ "${HAS_DUAL}" = "true" ]; then
+            MODE="mono"
+          elif [ "${ROOT_DOCKERFILE_ONLY}" = "true" ]; then
+            # FIX : un Dockerfile racine seul, sans structure micro/multi-service reelle,
+            # doit rester mono meme si TOTAL_SERVICES est passe a 1 juste au-dessus.
             MODE="mono"
           elif [ "${TOTAL_SERVICES}" -ge 1 ]; then
             MODE="micro"
@@ -70,6 +76,7 @@ jobs:
             echo "| Services détectés dans backend/ | ${SERVICE_COUNT_BACKEND} |"
             echo "| Total services | ${TOTAL_SERVICES} |"
             echo "| Structure dual (frontend + backend) | ${HAS_DUAL} |"
+            echo "| Dockerfile racine seul | ${ROOT_DOCKERFILE_ONLY} |"
             echo "| **Mode choisi** | **${MODE}** |"
             echo "| Environnement cible | ${{ inputs.environment }} |"
           } >> "$GITHUB_STEP_SUMMARY"
