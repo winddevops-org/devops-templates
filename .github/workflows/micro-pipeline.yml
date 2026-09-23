@@ -1,5 +1,4 @@
 name: Micro Pipeline Standardized
-
 on:
   workflow_call:
     inputs:
@@ -9,6 +8,9 @@ on:
       environment:
         required: true
         type: string
+      ingress_domain:
+        required: false
+        type: string
     secrets:
       GITOPS_TOKEN:
         required: true
@@ -16,13 +18,11 @@ on:
         required: true
       ACR_PASSWORD:
         required: true
-
 env:
   REGISTRY: 192.168.1.239:8085/selfkhaoula
   NEXUS_CERT_PATH: /home/ubuntu/nexus/certs/nexus.crt
   NEXUS_USER: admin
   NEXUS_PASSWORD: nexus111
-
 jobs:
   discover:
     runs-on: self-hosted
@@ -34,18 +34,14 @@ jobs:
         run: |
           sudo rm -rf "${{ github.workspace }}"/*
           sudo rm -rf "${{ github.workspace }}"/.??*
-
       - uses: actions/checkout@v4
-
       - name: Scan services
         id: scan
         run: |
           APP_NAME=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
           echo "app_name=${APP_NAME}" >> "$GITHUB_OUTPUT"
-
           SERVICES="["
           FIRST=true
-
           for dir in */; do
             dir="${dir%/}"
             case "${dir}" in
@@ -57,7 +53,6 @@ jobs:
               FIRST="false"
             fi
           done
-
           if [ -d "backend" ]; then
             for dir in backend/*/; do
               [ -d "${dir}" ] || continue
@@ -70,10 +65,8 @@ jobs:
               fi
             done
           fi
-
           SERVICES="${SERVICES}]"
           echo "services=${SERVICES}" >> "$GITHUB_OUTPUT"
-
   build-service:
     needs: discover
     runs-on: self-hosted
@@ -85,7 +78,6 @@ jobs:
     env:
       APP_NAME: ${{ needs.discover.outputs.app_name }}
       SERVICE_PATH: ${{ matrix.service }}
-
     steps:
       - name: Clean workspace and previous test containers
         run: |
@@ -93,22 +85,18 @@ jobs:
           docker rm -f "smoke-${{ matrix.service }}" 2>/dev/null || true
           sudo rm -rf "${{ github.workspace }}"/*
           sudo rm -rf "${{ github.workspace }}"/.??*
-
       - uses: actions/checkout@v4
-
       - name: Set environment variables
         run: |
           SERVICE_NAME=$(basename "${{ env.SERVICE_PATH }}")
           echo "SERVICE=${SERVICE_NAME}" >> "$GITHUB_ENV"
           echo "IMAGE=${{ env.REGISTRY }}/${{ env.APP_NAME }}-${SERVICE_NAME}:${{ github.sha }}" >> "$GITHUB_ENV"
-
       - name: Setup Docker credentials
         run: |
           sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
           sudo cp ${{ env.NEXUS_CERT_PATH }} /etc/docker/certs.d/192.168.1.239:8085/ca.crt
           sudo update-ca-certificates
           echo "${{ env.NEXUS_PASSWORD }}" | docker login 192.168.1.239:8085 -u ${{ env.NEXUS_USER }} --password-stdin
-
       - name: Check if image exists
         id: check_image
         run: |
@@ -117,7 +105,6 @@ jobs:
             SKIP="true"
           fi
           echo "SKIP_BUILD=${SKIP}" >> "$GITHUB_ENV"
-
       - name: Detect technology
         id: detect
         if: env.SKIP_BUILD != 'true'
@@ -128,18 +115,15 @@ jobs:
           HAS_GO=false
           HAS_ANGULAR=false
           JAVA_VERSION="17"
-
           if [ -f "${{ env.SERVICE_PATH }}/pom.xml" ]; then
             HAS_MAVEN=true
             JAVA_VERSION=$(grep -oP '(?<=<java.version>)[^<]+' "${{ env.SERVICE_PATH }}/pom.xml" 2>/dev/null | head -1)
             [ -z "${JAVA_VERSION}" ] && JAVA_VERSION="17"
-            
             if grep -q "postgresql" "${{ env.SERVICE_PATH }}/pom.xml"; then DB_TYPE="postgresql"
             elif grep -q "mysql" "${{ env.SERVICE_PATH }}/pom.xml"; then DB_TYPE="mysql"
             elif grep -q "mongo" "${{ env.SERVICE_PATH }}/pom.xml"; then DB_TYPE="mongodb"
             fi
           fi
-
           if [ -f "${{ env.SERVICE_PATH }}/requirements.txt" ]; then
             HAS_PYTHON=true
             if grep -q "psycopg2\|PyMySQL" "${{ env.SERVICE_PATH }}/requirements.txt"; then
@@ -148,7 +132,6 @@ jobs:
               DB_TYPE="mongodb"
             fi
           fi
-
           if [ -f "${{ env.SERVICE_PATH }}/go.mod" ]; then
             HAS_GO=true
             if grep -q "lib/pq\|pgx" "${{ env.SERVICE_PATH }}/go.mod"; then DB_TYPE="postgresql"
@@ -156,22 +139,18 @@ jobs:
             elif grep -q "mongo" "${{ env.SERVICE_PATH }}/go.mod"; then DB_TYPE="mongodb"
             fi
           fi
-
           [ -f "${{ env.SERVICE_PATH }}/angular.json" ] && HAS_ANGULAR=true
-
           echo "HAS_MAVEN=${HAS_MAVEN}" >> "$GITHUB_ENV"
           echo "HAS_PYTHON=${HAS_PYTHON}" >> "$GITHUB_ENV"
           echo "HAS_GO=${HAS_GO}" >> "$GITHUB_ENV"
           echo "HAS_ANGULAR=${HAS_ANGULAR}" >> "$GITHUB_ENV"
           echo "JAVA_VERSION=${JAVA_VERSION}" >> "$GITHUB_ENV"
           echo "DB_TYPE=${DB_TYPE}" >> "$GITHUB_ENV"
-
       - name: Start database container
         if: env.SKIP_BUILD != 'true' && env.DB_TYPE != 'none'
         run: |
           DB_PORT=$((5432 + RANDOM % 1000))
           echo "DB_PORT=${DB_PORT}" >> "$GITHUB_ENV"
-          
           if [ "${{ env.DB_TYPE }}" = "postgresql" ]; then
             docker run -d --name test-db-${{ env.SERVICE }} \
               -e POSTGRES_USER=testuser \
@@ -190,13 +169,11 @@ jobs:
               mysql:8
             sleep 10
           fi
-
       - name: Run Java tests
         if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
         continue-on-error: true
         run: |
           MAVEN_CACHE_DIR=$(mktemp -d)
-          
           mkdir -p "${{ env.SERVICE_PATH }}/src/test/resources"
           cat > "${{ env.SERVICE_PATH }}/src/test/resources/application-test.yml" << EOF
           spring:
@@ -224,7 +201,6 @@ jobs:
               mail:
                 enabled: false
           EOF
-
           docker run --rm --network host \
             -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
             -v "${MAVEN_CACHE_DIR}:/root/.m2" \
@@ -234,7 +210,6 @@ jobs:
               -Dspring.profiles.active=test,native \
               -Djwt.secret=ci-secret-key-for-testing-purposes-only-1234567890 \
               -Djwt.expiration=3600000 || echo "Tests finished with errors (non-blocking)"
-
       - name: Package Application
         if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
         run: |
@@ -249,7 +224,6 @@ jobs:
               -Dspring.cloud.config.enabled=false \
               -Dspring.cloud.discovery.enabled=false \
               -Deureka.client.enabled=false
-
       - name: Run Python tests
         if: env.HAS_PYTHON == 'true' && env.SKIP_BUILD != 'true'
         continue-on-error: true
@@ -259,7 +233,6 @@ jobs:
             -w /app \
             192.168.1.239:8085/selfkhaoula/python:3.11-slim \
             sh -c "pip install -r requirements.txt -q && pytest --tb=short"
-
       - name: Run Go tests
         if: env.HAS_GO == 'true' && env.SKIP_BUILD != 'true'
         continue-on-error: true
@@ -269,7 +242,6 @@ jobs:
             -w /app \
             192.168.1.239:8085/selfkhaoula/golang:1.22-alpine \
             go test ./... -v
-
       - name: Run Angular tests
         if: env.HAS_ANGULAR == 'true' && env.SKIP_BUILD != 'true'
         continue-on-error: true
@@ -279,7 +251,6 @@ jobs:
             -w /app \
             192.168.1.239:8085/selfkhaoula/node:20-browsers \
             sh -c "npm ci && npx ng test --watch=false --browsers=ChromeHeadlessNoSandbox"
-
       - name: Build Angular Application
         if: env.HAS_ANGULAR == 'true' && env.SKIP_BUILD != 'true'
         run: |
@@ -296,7 +267,6 @@ jobs:
               fi && \
               npx ng build --configuration production
             "
-
       - name: Build Docker image
         if: env.SKIP_BUILD != 'true'
         run: |
@@ -304,13 +274,11 @@ jobs:
             -f "${{ env.SERVICE_PATH }}/Dockerfile" \
             -t "${{ env.IMAGE }}" \
             "${{ env.SERVICE_PATH }}"
-
       - name: Security scan
         if: env.SKIP_BUILD != 'true'
         continue-on-error: true
         run: |
           trivy image --severity HIGH,CRITICAL --exit-code 0 "${{ env.IMAGE }}"
-
       - name: Smoke test
         if: env.SKIP_BUILD != 'true'
         run: |
@@ -322,7 +290,6 @@ jobs:
             -e SPRING_MAIL_HOST=localhost \
             -e SPRING_MAIL_PORT=25 \
             "${{ env.IMAGE }}")
-          
           MAX_WAIT=30
           WAITED=0
           while [ $WAITED -lt $MAX_WAIT ]; do
@@ -339,21 +306,17 @@ jobs:
             sleep 2
             WAITED=$((WAITED + 2))
           done
-          
           echo "Timeout after ${MAX_WAIT}s"
           docker logs "${CONTAINER_ID}"
           exit 1
-
       - name: Push image
         if: env.SKIP_BUILD != 'true'
         run: docker push "${{ env.IMAGE }}"
-
       - name: Cleanup
         if: always()
         run: |
           docker rm -f test-db-${{ env.SERVICE }} 2>/dev/null || true
           docker rm -f smoke-${{ env.SERVICE }} 2>/dev/null || true
-
   gitops:
     needs: [discover, build-service]
     runs-on: self-hosted
@@ -363,22 +326,18 @@ jobs:
       cancel-in-progress: false
     env:
       APP_NAME: ${{ needs.discover.outputs.app_name }}
-
     steps:
       - name: Clean workspace files
         run: |
           sudo rm -rf "${{ github.workspace }}"/*
           sudo rm -rf "${{ github.workspace }}"/.??*
-
       - uses: actions/checkout@v4
-
       - name: Checkout devops-templates
         uses: actions/checkout@v4
         with:
           repository: winddevops-org/devops-templates
           path: devops-templates
           token: ${{ secrets.GITOPS_TOKEN }}
-
       - name: Update GitOps for all microservices
         env:
           GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
@@ -386,24 +345,21 @@ jobs:
           SHA: ${{ github.sha }}
           SERVICES: ${{ needs.discover.outputs.services }}
           REGISTRY: 192.168.1.239:8085/selfkhaoula
+          INGRESS_DOMAIN: ${{ inputs.ingress_domain }}
         run: |
           git clone "https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git" gitops-environments
           cd gitops-environments
           git config user.email "ci@github.com"
           git config user.name "GitHub Actions"
-
           SERVICES_JSON='${{ env.SERVICES }}'
           SERVICES_LIST=$(echo "${SERVICES_JSON}" | jq -r '.[]')
-
           # Namespace unique pour toute l'application
           TARGET_NAMESPACE="staging-${APP_NAME}"
-
           for SERVICE_PATH in ${SERVICES_LIST}; do
             SERVICE_NAME=$(basename "${SERVICE_PATH}")
             COMP="${APP_NAME}-${SERVICE_NAME}"
             VPATH="environments/staging/${COMP}/values.yaml"
             mkdir -p "$(dirname "${VPATH}")"
-
             if [ ! -f "${VPATH}" ]; then
               printf '%s\n' \
                 "name: ${COMP}" \
@@ -439,7 +395,6 @@ jobs:
               # Force le namespace unique même sur les anciens fichiers
               sed -i "s|namespace:.*|namespace: ${TARGET_NAMESPACE}|" "${VPATH}"
             fi
-
             APATH="argocd-applications/${COMP}.yaml"
             mkdir -p argocd-applications
             if [ ! -f "${APATH}" ]; then
@@ -472,14 +427,12 @@ jobs:
                 "      - CreateNamespace=true" > "${APATH}"
             fi
           done
-
           git add .
           if git diff --cached --quiet; then
             echo "Nothing to commit."
             exit 0
           fi
           git commit -m "[${APP_NAME}] deploy all microservices -> ${SHA}"
-
           ATTEMPTS=0
           MAX_ATTEMPTS=5
           until git push origin main; do
