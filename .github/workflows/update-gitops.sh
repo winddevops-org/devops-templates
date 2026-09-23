@@ -39,7 +39,7 @@ echo "    Registre    : ${REGISTRY}"
 echo "    Replicas    : ${REPLICA_COUNT}"
 echo "    Pull Secret : ${IMAGE_PULL_SECRET}"
 echo "    DB type     : ${DB_TYPE:-none}"
-echo "    Ingress     : ${APP_NAME}.${INGRESS_DOMAIN}"
+echo "    Ingress domain : ${INGRESS_DOMAIN:-non defini}"
 echo "=================================================="
 
 GITOPS_REPO="https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git"
@@ -60,16 +60,31 @@ write_values() {
   local BASE_NAME=$(get_base_name "${COMP}")
   local COMPONENT="${COMP##*-}"
   local VPATH="environments/${ENV}/${BASE_NAME}/values-${COMPONENT}.yaml"
-  
+
   local CURRENT_INGRESS_HOST
+  local TLS_ENABLED="false"
   if [ "${ENV}" = "production" ] && [ -n "${INGRESS_DOMAIN}" ]; then
       CURRENT_INGRESS_HOST="${COMP}.${INGRESS_DOMAIN}"
+      TLS_ENABLED="true"
   else
       CURRENT_INGRESS_HOST="${COMP}.${ENV}.local"
   fi
 
   mkdir -p "$(dirname "${VPATH}")"
-  
+
+  local INGRESS_EXTRA=""
+  if [ "${TLS_ENABLED}" = "true" ]; then
+    INGRESS_EXTRA=$(cat <<EXTRAEOF
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  tls:
+    - hosts:
+        - ${CURRENT_INGRESS_HOST}
+      secretName: ${COMP}-tls
+EXTRAEOF
+)
+  fi
+
   if [ ! -f "${VPATH}" ]; then
     cat > "${VPATH}" <<VALEOF
 name: ${COMP}
@@ -91,6 +106,7 @@ ingress:
   host: ${CURRENT_INGRESS_HOST}
   path: /
   pathType: Prefix
+${INGRESS_EXTRA}
 resources:
   limits:
     cpu: 500m
@@ -180,17 +196,17 @@ write_argocd() {
   local COMP="$1"
   local BASE_NAME=$(get_base_name "${COMP}")
   local COMPONENT="${COMP##*-}"
-  
+
   local TARGET_DIR="argocd-applications"
   if [ "${ENV}" = "production" ]; then
     TARGET_DIR="argocd-applications-prod"
   fi
 
   local APATH="${TARGET_DIR}/${COMP}-${ENV}.yaml"
-  
+
   mkdir -p "${TARGET_DIR}"
   [ -f "${APATH}" ] && return 0
-  
+
   cat > "${APATH}" <<ARGOEOF
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -225,14 +241,14 @@ ARGOEOF
 if [ -z "${DEPLOY_MODE}" ]; then
     HAS_FRONT=false
     HAS_BACK=false
-    
+
     if [ -d "frontend" ] && [ -f "frontend/Dockerfile" ]; then
         HAS_FRONT=true
     fi
     if [ -d "backend" ] && [ -f "backend/Dockerfile" ]; then
         HAS_BACK=true
     fi
-    
+
     if [ "${HAS_FRONT}" = "true" ] && [ "${HAS_BACK}" = "true" ]; then
         DEPLOY_MODE="dual"
     elif [ "${HAS_FRONT}" = "true" ]; then
