@@ -104,6 +104,20 @@ jobs:
           else echo "HAS_MAVEN=false" >> "$GITHUB_ENV"; fi
           echo "DB_TYPE=${DB_TYPE}" >> "$GITHUB_ENV"
 
+      # --- AJOUT : lecture du fichier .devops.yml optionnel (persistance de fichiers)
+      - name: Detect persistence config
+        run: |
+          if [ -f ".devops.yml" ]; then
+            PERSIST_ENABLED=$(grep -A3 "^persistence:" .devops.yml | grep "enabled:" | awk '{print $2}')
+            PERSIST_FILEPATH=$(grep -A3 "^persistence:" .devops.yml | grep "path:" | awk '{print $2}')
+            PERSIST_SIZE=$(grep -A3 "^persistence:" .devops.yml | grep "size:" | awk '{print $2}')
+          else
+            PERSIST_ENABLED="false"
+          fi
+          echo "PERSIST_ENABLED=${PERSIST_ENABLED:-false}" >> "$GITHUB_ENV"
+          echo "PERSIST_FILEPATH=${PERSIST_FILEPATH:-}" >> "$GITHUB_ENV"
+          echo "PERSIST_SIZE=${PERSIST_SIZE:-1Gi}" >> "$GITHUB_ENV"
+
       - name: Setup Docker Credentials
         run: |
           if [ "${{ inputs.environment }}" = "production" ]; then
@@ -264,6 +278,9 @@ jobs:
           ENV: ${{ inputs.environment }}
           REGISTRY: ${{ inputs.environment == 'production' && vars.ACR_LOGIN_SERVER || '192.168.1.239:8085/selfkhaoula' }}
           INGRESS_DOMAIN: ${{ inputs.ingress_domain }}
+          PERSIST_ENABLED: ${{ env.PERSIST_ENABLED }}
+          PERSIST_FILEPATH: ${{ env.PERSIST_FILEPATH }}
+          PERSIST_SIZE: ${{ env.PERSIST_SIZE }}
         run: |
           chmod +x devops-templates/.github/workflows/update-gitops.sh
           devops-templates/.github/workflows/update-gitops.sh
@@ -281,6 +298,7 @@ jobs:
             echo "| Mode de deploiement | ${DEPLOY_MODE} |"
             echo "| Build saute (image deja existante) | ${SKIP_BUILD:-false} |"
             echo "| Type de base de donnees | ${DB_TYPE:-none} |"
+            echo "| Persistance fichier | ${PERSIST_ENABLED:-false} |"
             if [ "${DEPLOY_MODE}" = "dual" ]; then
               echo "| Image frontend | ${FRONT_LOCAL_IMAGE:-N/A} |"
               echo "| Image backend | ${BACK_LOCAL_IMAGE:-N/A} |"
