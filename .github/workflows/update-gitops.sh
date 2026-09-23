@@ -11,11 +11,8 @@ SHA="${SHA}"
 DB_TYPE="${DB_TYPE}"
 DEPLOY_MODE="${DEPLOY_MODE}"
 ENV="${ENV:-staging}"
-
-# Domaine personnalise pour l'Ingress (uniquement utilise en production)
 INGRESS_DOMAIN="${INGRESS_DOMAIN:-}"
 
-# Selection dynamique du registre et du secret de tirage d'image
 if [ "${ENV}" = "production" ]; then
   REGISTRY="windazureacr.azurecr.io"
   REPLICA_COUNT=2
@@ -26,7 +23,6 @@ else
   IMAGE_PULL_SECRET="nexus-registry-secret"
 fi
 
-# Definition des URLs de depots selon l'environnement (Staging garde le HTTPS)
 if [ "${ENV}" = "production" ]; then
     TEMPLATES_URL="git@github.com:winddevops-org/devops-templates.git"
     ENVIRONMENTS_URL="git@github.com:winddevops-org/gitops-environments.git"
@@ -43,6 +39,7 @@ echo "    Registre    : ${REGISTRY}"
 echo "    Replicas    : ${REPLICA_COUNT}"
 echo "    Pull Secret : ${IMAGE_PULL_SECRET}"
 echo "    DB type     : ${DB_TYPE:-none}"
+echo "    Ingress     : ${APP_NAME}.${INGRESS_DOMAIN}"
 echo "=================================================="
 
 GITOPS_REPO="https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git"
@@ -64,7 +61,6 @@ write_values() {
   local COMPONENT="${COMP##*-}"
   local VPATH="environments/${ENV}/${BASE_NAME}/values-${COMPONENT}.yaml"
   
-  # Calcul de l'host exact pour ce composant
   local CURRENT_INGRESS_HOST
   if [ "${ENV}" = "production" ] && [ -n "${INGRESS_DOMAIN}" ]; then
       CURRENT_INGRESS_HOST="${COMP}.${INGRESS_DOMAIN}"
