@@ -44,3 +44,17 @@ spec:
             {{- include "app-generic.dbEnvVars" . | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.persistence.enabled }}
+          # --- AJOUT : monte le fichier persistant sans toucher au reste du conteneur (subPath)
+          volumeMounts:
+            - name: persistent-data
+              mountPath: "{{ .Values.persistence.mountDir }}/{{ .Values.persistence.fileName }}"
+              subPath: "{{ .Values.persistence.fileName }}"
+          {{- end }}
+      {{- if .Values.persistence.enabled }}
+      # --- AJOUT : volume relie au PVC dedie (voir pvc.yaml)
+      volumes:
+        - name: persistent-data
+          persistentVolumeClaim:
+            claimName: {{ .Values.name | default .Release.Name }}-data
+      {{- end }}
