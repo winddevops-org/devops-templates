@@ -12,6 +12,10 @@ DB_TYPE="${DB_TYPE}"
 DEPLOY_MODE="${DEPLOY_MODE}"
 ENV="${ENV:-staging}"
 INGRESS_DOMAIN="${INGRESS_DOMAIN:-}"
+# --- AJOUT : variables de persistance (facultatives)
+PERSIST_ENABLED="${PERSIST_ENABLED:-false}"
+PERSIST_FILEPATH="${PERSIST_FILEPATH:-}"
+PERSIST_SIZE="${PERSIST_SIZE:-1Gi}"
 
 if [ "${ENV}" = "production" ]; then
   REGISTRY="windazureacrch0s.azurecr.io"
@@ -40,6 +44,7 @@ echo "    Replicas    : ${REPLICA_COUNT}"
 echo "    Pull Secret : ${IMAGE_PULL_SECRET}"
 echo "    DB type     : ${DB_TYPE:-none}"
 echo "    Ingress domain : ${INGRESS_DOMAIN:-non defini}"
+echo "    Persistance fichier : ${PERSIST_ENABLED} (${PERSIST_FILEPATH:-n/a})"
 echo "=================================================="
 
 GITOPS_REPO="https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git"
@@ -85,11 +90,30 @@ EXTRAEOF
 )
   fi
 
+  # --- AJOUT : replica forcé à 1 si persistance de fichier activée (SQLite non partageable)
+  local EFFECTIVE_REPLICAS="${REPLICA_COUNT}"
+  if [ "${PERSIST_ENABLED}" = "true" ]; then
+    EFFECTIVE_REPLICAS=1
+  fi
+
+  # --- AJOUT : bloc persistence pour le values.yaml
+  local PERSISTENCE_BLOCK="persistence:
+  enabled: false"
+  if [ "${PERSIST_ENABLED}" = "true" ] && [ -n "${PERSIST_FILEPATH}" ]; then
+    local PERSIST_DIR=$(dirname "${PERSIST_FILEPATH}")
+    local PERSIST_FILENAME=$(basename "${PERSIST_FILEPATH}")
+    PERSISTENCE_BLOCK="persistence:
+  enabled: true
+  mountDir: ${PERSIST_DIR}
+  fileName: ${PERSIST_FILENAME}
+  size: ${PERSIST_SIZE}"
+  fi
+
   if [ ! -f "${VPATH}" ]; then
     cat > "${VPATH}" <<VALEOF
 name: ${COMP}
 namespace: ${ENV}-${BASE_NAME}
-replicaCount: ${REPLICA_COUNT}
+replicaCount: ${EFFECTIVE_REPLICAS}
 image:
   repository: "${REPO}"
   tag: "${TAG}"
@@ -107,6 +131,7 @@ ingress:
   path: /
   pathType: Prefix
 ${INGRESS_EXTRA}
+${PERSISTENCE_BLOCK}
 resources:
   limits:
     cpu: 500m
@@ -138,10 +163,11 @@ VALEOF
   else
     sed -i "s|repository:.*|repository: \"${REPO}\"|" "${VPATH}"
     sed -i "s|tag:.*|tag: \"${TAG}\"|" "${VPATH}"
-    sed -i "s|replicaCount:.*|replicaCount: ${REPLICA_COUNT}|" "${VPATH}"
+    sed -i "s|replicaCount:.*|replicaCount: ${EFFECTIVE_REPLICAS}|" "${VPATH}"
     sed -i "s|name: nexus-registry-secret|name: ${IMAGE_PULL_SECRET}|" "${VPATH}" || true
     sed -i "s|host: .*|host: ${CURRENT_INGRESS_HOST}|" "${VPATH}" || true
     echo "values-${COMPONENT}.yaml mis a jour pour ${COMP}"
+    echo "NOTE: si le bloc persistence n'existe pas encore dans ce fichier, il faut le supprimer une fois pour qu'il soit regenere avec."
   fi
 }
 
@@ -321,6 +347,7 @@ if [ -n "${GITHUB_STEP_SUMMARY}" ]; then
     echo "| Registre | ${REGISTRY} |"
     echo "| Mode | ${DEPLOY_MODE} |"
     echo "| DB | ${DB_TYPE:-none} |"
+    echo "| Persistance | ${PERSIST_ENABLED} |"
     echo "| Commit | ${COMMIT_MSG} |"
   } >> "$GITHUB_STEP_SUMMARY"
 fi
