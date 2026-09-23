@@ -44,9 +44,11 @@ spec:
             - |
               if [ ! -f "/data/{{ .Values.persistence.fileName }}" ]; then
                 touch "/data/{{ .Values.persistence.fileName }}"
-                echo "Fichier {{ .Values.persistence.fileName }} cree sur le volume"
+                chmod 666 "/data/{{ .Values.persistence.fileName }}"
+                echo "Fichier {{ .Values.persistence.fileName }} cree et droits accordes"
               else
-                echo "Fichier {{ .Values.persistence.fileName }} deja present"
+                chmod 666 "/data/{{ .Values.persistence.fileName }}"
+                echo "Fichier {{ .Values.persistence.fileName }} deja present, droits verifies"
               fi
           volumeMounts:
             - name: persistent-data
