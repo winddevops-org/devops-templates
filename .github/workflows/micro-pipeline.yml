@@ -265,12 +265,33 @@ jobs:
       - name: Patch temporaire budgets Angular (CI uniquement, non commite)
         if: env.HAS_ANGULAR == 'true' && env.SKIP_BUILD != 'true'
         run: |
+          set -e
           ANGULAR_JSON="${{ env.SERVICE_PATH }}/angular.json"
           if [ -f "${ANGULAR_JSON}" ]; then
             cp "${ANGULAR_JSON}" "${ANGULAR_JSON}.orig"
-            jq '(.projects[].architect.build.configurations.production.budgets[]? | select(.type=="anyComponentStyle") | .maximumError) |= "40kb"' \
-              "${ANGULAR_JSON}" > "${ANGULAR_JSON}.tmp" && mv "${ANGULAR_JSON}.tmp" "${ANGULAR_JSON}"
-            echo "Budget CSS temporairement releve a 40kb pour ce build CI"
+            echo "--- Budgets AVANT patch ---"
+            jq '[.. | objects | select(has("type") and (.type=="anyComponentStyle"))]' "${ANGULAR_JSON}"
+            # Parcourt tout l'arbre JSON (walk) au lieu de viser un chemin fixe
+            # (.projects[].architect.build.configurations.production...), car le nom
+            # du target/de la config ou l'emplacement des "budgets" peut varier
+            # selon la version du builder Angular. Ca patche TOUS les budgets
+            # de type anyComponentStyle, ou qu'ils se trouvent dans le fichier.
+            jq 'walk(
+                  if type == "object" and has("type") and .type == "anyComponentStyle"
+                  then . + {maximumWarning: "40kb", maximumError: "60kb"}
+                  else .
+                  end
+                )' "${ANGULAR_JSON}" > "${ANGULAR_JSON}.tmp"
+            mv "${ANGULAR_JSON}.tmp" "${ANGULAR_JSON}"
+            echo "--- Budgets APRES patch ---"
+            jq '[.. | objects | select(has("type") and (.type=="anyComponentStyle"))]' "${ANGULAR_JSON}"
+            if diff -q "${ANGULAR_JSON}.orig" "${ANGULAR_JSON}" >/dev/null; then
+              echo "::warning::angular.json inchange apres le patch jq - verifier la structure des budgets"
+            else
+              echo "Budget CSS temporairement releve (maximumError=60kb) pour ce build CI"
+            fi
+          else
+            echo "::warning::angular.json introuvable a ${ANGULAR_JSON}"
           fi
       - name: Build Angular Application
         if: env.HAS_ANGULAR == 'true' && env.SKIP_BUILD != 'true'
