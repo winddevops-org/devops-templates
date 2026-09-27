@@ -31,6 +31,12 @@ resources:
 
 env: []                   # Variables d'environnement
 
+persistence:
+  enabled: false
+  storage: 1Gi
+  storageClassName: ""
+  accessMode: ReadWriteOnce
+
 database:
   enabled: false
   type: ""
