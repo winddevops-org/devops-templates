@@ -19,7 +19,6 @@ on:
       ACR_PASSWORD:
         required: true
 env:
-  REGISTRY: 192.168.1.239:8085/selfkhaoula
   NEXUS_CERT_PATH: /home/ubuntu/nexus/certs/nexus.crt
   NEXUS_USER: admin
   NEXUS_PASSWORD: nexus111
@@ -90,13 +89,25 @@ jobs:
         run: |
           SERVICE_NAME=$(basename "${{ env.SERVICE_PATH }}")
           echo "SERVICE=${SERVICE_NAME}" >> "$GITHUB_ENV"
-          echo "IMAGE=${{ env.REGISTRY }}/${{ env.APP_NAME }}-${SERVICE_NAME}:${{ github.sha }}" >> "$GITHUB_ENV"
-      - name: Setup Docker credentials
+          if [ "${{ inputs.environment }}" = "production" ]; then
+            REGISTRY="windazureacrch0s.azurecr.io"
+            echo "IMAGE_PULL_SECRET=azureacr-secret" >> "$GITHUB_ENV"
+          else
+            REGISTRY="192.168.1.239:8085/selfkhaoula"
+            echo "IMAGE_PULL_SECRET=nexus-registry-secret" >> "$GITHUB_ENV"
+          fi
+          echo "REGISTRY=${REGISTRY}" >> "$GITHUB_ENV"
+          echo "IMAGE=${REGISTRY}/${{ env.APP_NAME }}-${SERVICE_NAME}:${{ github.sha }}" >> "$GITHUB_ENV"
+      - name: Setup registry credentials
         run: |
-          sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
-          sudo cp ${{ env.NEXUS_CERT_PATH }} /etc/docker/certs.d/192.168.1.239:8085/ca.crt
-          sudo update-ca-certificates
-          echo "${{ env.NEXUS_PASSWORD }}" | docker login 192.168.1.239:8085 -u ${{ env.NEXUS_USER }} --password-stdin
+          if [ "${{ inputs.environment }}" = "production" ]; then
+            echo "${{ secrets.ACR_PASSWORD }}" | docker login "${{ env.REGISTRY }}" -u "${{ secrets.ACR_USERNAME }}" --password-stdin
+          else
+            sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
+            sudo cp ${{ env.NEXUS_CERT_PATH }} /etc/docker/certs.d/192.168.1.239:8085/ca.crt
+            sudo update-ca-certificates
+            echo "${{ env.NEXUS_PASSWORD }}" | docker login 192.168.1.239:8085 -u ${{ env.NEXUS_USER }} --password-stdin
+          fi
       - name: Check if image exists
         id: check_image
         run: |
@@ -343,105 +354,11 @@ jobs:
           GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
           APP_NAME: ${{ env.APP_NAME }}
           SHA: ${{ github.sha }}
-          SERVICES: ${{ needs.discover.outputs.services }}
-          REGISTRY: 192.168.1.239:8085/selfkhaoula
+          ENV: ${{ inputs.environment }}
           INGRESS_DOMAIN: ${{ inputs.ingress_domain }}
+          DEPLOY_MODE: micro
         run: |
-          git clone "https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git" gitops-environments
-          cd gitops-environments
-          git config user.email "ci@github.com"
-          git config user.name "GitHub Actions"
-          SERVICES_JSON='${{ env.SERVICES }}'
-          SERVICES_LIST=$(echo "${SERVICES_JSON}" | jq -r '.[]')
-          # Namespace unique pour toute l'application
-          TARGET_NAMESPACE="staging-${APP_NAME}"
-          for SERVICE_PATH in ${SERVICES_LIST}; do
-            SERVICE_NAME=$(basename "${SERVICE_PATH}")
-            COMP="${APP_NAME}-${SERVICE_NAME}"
-            VPATH="environments/staging/${COMP}/values.yaml"
-            mkdir -p "$(dirname "${VPATH}")"
-            if [ ! -f "${VPATH}" ]; then
-              printf '%s\n' \
-                "name: ${COMP}" \
-                "namespace: ${TARGET_NAMESPACE}" \
-                "replicaCount: 1" \
-                "image:" \
-                "  repository: \"${REGISTRY}/${COMP}\"" \
-                "  tag: \"${SHA}\"" \
-                "  pullPolicy: IfNotPresent" \
-                "imagePullSecrets:" \
-                "- name: nexus-registry-secret" \
-                "service:" \
-                "  type: ClusterIP" \
-                "  port: 80" \
-                "  targetPort: 80" \
-                "ingress:" \
-                "  enabled: true" \
-                "  className: nginx" \
-                "  host: ${COMP}.staging.local" \
-                "  path: /" \
-                "  pathType: Prefix" \
-                "resources:" \
-                "  limits:" \
-                "    cpu: 500m" \
-                "    memory: 512Mi" \
-                "  requests:" \
-                "    cpu: 250m" \
-                "    memory: 256Mi" \
-                "env: []" > "${VPATH}"
-            else
-              sed -i "s|repository:.*|repository: \"${REGISTRY}/${COMP}\"|" "${VPATH}"
-              sed -i "s|tag:.*|tag: \"${SHA}\"|" "${VPATH}"
-              # Force le namespace unique même sur les anciens fichiers
-              sed -i "s|namespace:.*|namespace: ${TARGET_NAMESPACE}|" "${VPATH}"
-            fi
-            APATH="argocd-applications/${COMP}.yaml"
-            mkdir -p argocd-applications
-            if [ ! -f "${APATH}" ]; then
-              printf '%s\n' \
-                "apiVersion: argoproj.io/v1alpha1" \
-                "kind: Application" \
-                "metadata:" \
-                "  name: ${COMP}" \
-                "  namespace: argocd" \
-                "spec:" \
-                "  project: stagiaires" \
-                "  sources:" \
-                "    - repoURL: https://github.com/winddevops-org/devops-templates" \
-                "      targetRevision: main" \
-                "      path: helm-charts/app-generic" \
-                "      helm:" \
-                "        valueFiles:" \
-                "          - \$values/environments/staging/${COMP}/values.yaml" \
-                "    - repoURL: https://github.com/winddevops-org/gitops-environments" \
-                "      targetRevision: main" \
-                "      ref: values" \
-                "  destination:" \
-                "    server: https://kubernetes.default.svc" \
-                "    namespace: ${TARGET_NAMESPACE}" \
-                "  syncPolicy:" \
-                "    automated:" \
-                "      prune: true" \
-                "      selfHeal: true" \
-                "    syncOptions:" \
-                "      - CreateNamespace=true" > "${APATH}"
-            fi
-          done
-          git add .
-          if git diff --cached --quiet; then
-            echo "Nothing to commit."
-            exit 0
-          fi
-          git commit -m "[${APP_NAME}] deploy all microservices -> ${SHA}"
-          ATTEMPTS=0
-          MAX_ATTEMPTS=5
-          until git push origin main; do
-            ATTEMPTS=$((ATTEMPTS + 1))
-            if [ "${ATTEMPTS}" -ge "${MAX_ATTEMPTS}" ]; then
-              echo "Push failed after ${MAX_ATTEMPTS} attempts."
-              exit 1
-            fi
-            echo "Push rejected, rebasing and retrying (attempt ${ATTEMPTS}/${MAX_ATTEMPTS})..."
-            sleep $((RANDOM % 5 + 1))
-            git pull --rebase origin main
-          done
+          # ADAPTER LE CHEMIN ci-dessous a l'emplacement reel du script dans devops-templates
+          SERVICES=$(echo '${{ needs.discover.outputs.services }}' | jq -r '.[]' | tr '\n' ' ')
+          export SERVICES
+          bash devops-templates/scripts/update-gitops.sh
