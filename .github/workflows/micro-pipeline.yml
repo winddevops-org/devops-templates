@@ -384,4 +384,4 @@ jobs:
           # ADAPTER LE CHEMIN ci-dessous a l'emplacement reel du script dans devops-templates
           SERVICES=$(echo '${{ needs.discover.outputs.services }}' | jq -r '.[]' | tr '\n' ' ')
           export SERVICES
-          bash devops-templates/scripts/update-gitops.sh
+          bash devops-templates/.github/workflows/update-gitops.sh
