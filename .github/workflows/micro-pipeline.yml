@@ -262,37 +262,6 @@ jobs:
             -w /app \
             192.168.1.239:8085/selfkhaoula/node:20-browsers \
             sh -c "npm ci && npx ng test --watch=false --browsers=ChromeHeadlessNoSandbox"
-      - name: Patch temporaire budgets Angular (CI uniquement, non commite)
-        if: env.HAS_ANGULAR == 'true' && env.SKIP_BUILD != 'true'
-        run: |
-          set -e
-          ANGULAR_JSON="${{ env.SERVICE_PATH }}/angular.json"
-          if [ -f "${ANGULAR_JSON}" ]; then
-            cp "${ANGULAR_JSON}" "${ANGULAR_JSON}.orig"
-            echo "--- Budgets AVANT patch ---"
-            jq '[.. | objects | select(has("type") and (.type=="anyComponentStyle"))]' "${ANGULAR_JSON}"
-            # Parcourt tout l'arbre JSON (walk) au lieu de viser un chemin fixe
-            # (.projects[].architect.build.configurations.production...), car le nom
-            # du target/de la config ou l'emplacement des "budgets" peut varier
-            # selon la version du builder Angular. Ca patche TOUS les budgets
-            # de type anyComponentStyle, ou qu'ils se trouvent dans le fichier.
-            jq 'walk(
-                  if type == "object" and has("type") and .type == "anyComponentStyle"
-                  then . + {maximumWarning: "40kb", maximumError: "60kb"}
-                  else .
-                  end
-                )' "${ANGULAR_JSON}" > "${ANGULAR_JSON}.tmp"
-            mv "${ANGULAR_JSON}.tmp" "${ANGULAR_JSON}"
-            echo "--- Budgets APRES patch ---"
-            jq '[.. | objects | select(has("type") and (.type=="anyComponentStyle"))]' "${ANGULAR_JSON}"
-            if diff -q "${ANGULAR_JSON}.orig" "${ANGULAR_JSON}" >/dev/null; then
-              echo "::warning::angular.json inchange apres le patch jq - verifier la structure des budgets"
-            else
-              echo "Budget CSS temporairement releve (maximumError=60kb) pour ce build CI"
-            fi
-          else
-            echo "::warning::angular.json introuvable a ${ANGULAR_JSON}"
-          fi
       - name: Build Angular Application
         if: env.HAS_ANGULAR == 'true' && env.SKIP_BUILD != 'true'
         run: |
@@ -307,6 +276,29 @@ jobs:
                 echo \"@angular/animations manquant, installation de la version \$CORE_VERSION pour matcher @angular/core\";
                 npm install @angular/animations@\$CORE_VERSION --no-save --legacy-peer-deps;
               fi && \
+              node -e \"
+                const fs = require('fs');
+                const p = 'angular.json';
+                const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+                let count = 0;
+                function walk(o) {
+                  if (o && typeof o === 'object') {
+                    if (Array.isArray(o)) { o.forEach(walk); }
+                    else {
+                      if (o.type === 'anyComponentStyle') {
+                        o.maximumWarning = '40kb';
+                        o.maximumError = '60kb';
+                        count++;
+                      }
+                      Object.values(o).forEach(walk);
+                    }
+                  }
+                }
+                walk(j);
+                fs.writeFileSync(p, JSON.stringify(j, null, 2));
+                console.log('Budgets anyComponentStyle patches (CI uniquement, non commite): ' + count);
+                if (count === 0) { console.warn('AUCUN budget anyComponentStyle trouve dans angular.json - verifier la structure'); }
+              \" && \
               npx ng build --configuration production
             "
       - name: Build Docker image
