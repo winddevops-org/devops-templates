@@ -12,10 +12,6 @@ DB_TYPE="${DB_TYPE}"
 DEPLOY_MODE="${DEPLOY_MODE}"
 ENV="${ENV:-staging}"
 INGRESS_DOMAIN="${INGRESS_DOMAIN:-}"
-# --- AJOUT : variables de persistance (facultatives)
-PERSIST_ENABLED="${PERSIST_ENABLED:-false}"
-PERSIST_FILEPATH="${PERSIST_FILEPATH:-}"
-PERSIST_SIZE="${PERSIST_SIZE:-1Gi}"
 
 if [ "${ENV}" = "production" ]; then
   REGISTRY="windazureacrch0s.azurecr.io"
@@ -44,10 +40,32 @@ echo "    Replicas    : ${REPLICA_COUNT}"
 echo "    Pull Secret : ${IMAGE_PULL_SECRET}"
 echo "    DB type     : ${DB_TYPE:-none}"
 echo "    Ingress domain : ${INGRESS_DOMAIN:-non defini}"
-echo "    Persistance fichier : ${PERSIST_ENABLED} (${PERSIST_FILEPATH:-n/a})"
 echo "=================================================="
 
 GITOPS_REPO="https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git"
+
+# Racine du workspace (repo applicatif deja checkoute par le workflow appelant),
+# a garder AVANT le cd dans gitops-environments pour pouvoir lire pom.xml / requirements.txt / go.mod
+WORKSPACE_ROOT="$(pwd)"
+
+detect_db_type() {
+  local SPATH="${WORKSPACE_ROOT}/$1"
+  if [ -f "${SPATH}/pom.xml" ]; then
+    if grep -q "postgresql" "${SPATH}/pom.xml"; then echo "postgresql"; return; fi
+    if grep -q "mysql" "${SPATH}/pom.xml"; then echo "mysql"; return; fi
+    if grep -q "mongo" "${SPATH}/pom.xml"; then echo "mongodb"; return; fi
+  fi
+  if [ -f "${SPATH}/requirements.txt" ]; then
+    if grep -q "psycopg2\|PyMySQL" "${SPATH}/requirements.txt"; then echo "postgresql"; return; fi
+    if grep -q "pymongo" "${SPATH}/requirements.txt"; then echo "mongodb"; return; fi
+  fi
+  if [ -f "${SPATH}/go.mod" ]; then
+    if grep -q "lib/pq\|pgx" "${SPATH}/go.mod"; then echo "postgresql"; return; fi
+    if grep -q "mysql" "${SPATH}/go.mod"; then echo "mysql"; return; fi
+    if grep -q "mongo" "${SPATH}/go.mod"; then echo "mongodb"; return; fi
+  fi
+  echo "none"
+}
 
 git clone "${GITOPS_REPO}" gitops-environments
 cd gitops-environments
@@ -90,30 +108,11 @@ EXTRAEOF
 )
   fi
 
-  # --- AJOUT : replica forcé à 1 si persistance de fichier activée (SQLite non partageable)
-  local EFFECTIVE_REPLICAS="${REPLICA_COUNT}"
-  if [ "${PERSIST_ENABLED}" = "true" ]; then
-    EFFECTIVE_REPLICAS=1
-  fi
-
-  # --- AJOUT : bloc persistence pour le values.yaml
-  local PERSISTENCE_BLOCK="persistence:
-  enabled: false"
-  if [ "${PERSIST_ENABLED}" = "true" ] && [ -n "${PERSIST_FILEPATH}" ]; then
-    local PERSIST_DIR=$(dirname "${PERSIST_FILEPATH}")
-    local PERSIST_FILENAME=$(basename "${PERSIST_FILEPATH}")
-    PERSISTENCE_BLOCK="persistence:
-  enabled: true
-  mountDir: ${PERSIST_DIR}
-  fileName: ${PERSIST_FILENAME}
-  size: ${PERSIST_SIZE}"
-  fi
-
   if [ ! -f "${VPATH}" ]; then
     cat > "${VPATH}" <<VALEOF
 name: ${COMP}
 namespace: ${ENV}-${BASE_NAME}
-replicaCount: ${EFFECTIVE_REPLICAS}
+replicaCount: ${REPLICA_COUNT}
 image:
   repository: "${REPO}"
   tag: "${TAG}"
@@ -131,7 +130,6 @@ ingress:
   path: /
   pathType: Prefix
 ${INGRESS_EXTRA}
-${PERSISTENCE_BLOCK}
 resources:
   limits:
     cpu: 500m
@@ -163,11 +161,10 @@ VALEOF
   else
     sed -i "s|repository:.*|repository: \"${REPO}\"|" "${VPATH}"
     sed -i "s|tag:.*|tag: \"${TAG}\"|" "${VPATH}"
-    sed -i "s|replicaCount:.*|replicaCount: ${EFFECTIVE_REPLICAS}|" "${VPATH}"
+    sed -i "s|replicaCount:.*|replicaCount: ${REPLICA_COUNT}|" "${VPATH}"
     sed -i "s|name: nexus-registry-secret|name: ${IMAGE_PULL_SECRET}|" "${VPATH}" || true
     sed -i "s|host: .*|host: ${CURRENT_INGRESS_HOST}|" "${VPATH}" || true
     echo "values-${COMPONENT}.yaml mis a jour pour ${COMP}"
-    echo "NOTE: si le bloc persistence n'existe pas encore dans ce fichier, il faut le supprimer une fois pour qu'il soit regenere avec."
   fi
 }
 
@@ -264,6 +261,166 @@ ARGOEOF
   echo "ArgoCD Application creee pour ${COMP} dans ${TARGET_DIR} (namespace ${ENV}-${BASE_NAME})"
 }
 
+write_micro_values() {
+  local COMP="$1" REPO="$2" TAG="$3"
+  local VPATH="environments/${ENV}/${COMP}/values.yaml"
+  local CURRENT_INGRESS_HOST
+  local TLS_ENABLED="false"
+  if [ "${ENV}" = "production" ] && [ -n "${INGRESS_DOMAIN}" ]; then
+      CURRENT_INGRESS_HOST="${COMP}.${INGRESS_DOMAIN}"
+      TLS_ENABLED="true"
+  else
+      CURRENT_INGRESS_HOST="${COMP}.${ENV}.local"
+  fi
+
+  mkdir -p "$(dirname "${VPATH}")"
+
+  local INGRESS_EXTRA=""
+  if [ "${TLS_ENABLED}" = "true" ]; then
+    INGRESS_EXTRA=$(cat <<EXTRAEOF
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  tls:
+    - hosts:
+        - ${CURRENT_INGRESS_HOST}
+      secretName: ${COMP}-tls
+EXTRAEOF
+)
+  fi
+
+  if [ ! -f "${VPATH}" ]; then
+    cat > "${VPATH}" <<VALEOF
+name: ${COMP}
+namespace: ${ENV}-${APP_NAME}
+replicaCount: ${REPLICA_COUNT}
+image:
+  repository: "${REPO}"
+  tag: "${TAG}"
+  pullPolicy: IfNotPresent
+imagePullSecrets:
+  - name: ${IMAGE_PULL_SECRET}
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 80
+ingress:
+  enabled: true
+  className: nginx
+  host: ${CURRENT_INGRESS_HOST}
+  path: /
+  pathType: Prefix
+${INGRESS_EXTRA}
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+env: []
+database:
+  enabled: false
+  type: ""
+  name: ""
+  storage: 1Gi
+VALEOF
+    echo "values.yaml cree pour ${COMP} dans namespace ${ENV}-${APP_NAME}"
+  else
+    sed -i "s|repository:.*|repository: \"${REPO}\"|" "${VPATH}"
+    sed -i "s|tag:.*|tag: \"${TAG}\"|" "${VPATH}"
+    sed -i "s|replicaCount:.*|replicaCount: ${REPLICA_COUNT}|" "${VPATH}"
+    sed -i "s|namespace:.*|namespace: ${ENV}-${APP_NAME}|" "${VPATH}"
+    sed -i "0,/name: .*-secret/s||name: ${IMAGE_PULL_SECRET}|" "${VPATH}" || true
+    sed -i "s|host: .*|host: ${CURRENT_INGRESS_HOST}|" "${VPATH}" || true
+    echo "values.yaml mis a jour pour ${COMP}"
+  fi
+}
+
+write_micro_db_values() {
+  local COMP="$1" DBT="$2"
+  local VPATH="environments/${ENV}/${COMP}/values.yaml"
+  local DB_NAME="${COMP//-/_}_db"
+
+  if [ "${DBT}" = "none" ] || [ -z "${DBT}" ]; then
+    echo "Pas de DB externe pour ${COMP}"
+    return 0
+  fi
+
+  python3 - "${VPATH}" "${DBT}" "${DB_NAME}" "${ENV}" "${COMP}" <<'PYEOF'
+import sys, re
+path, db_type, db_name, env, comp = sys.argv[1:6]
+with open(path) as f:
+    content = f.read()
+content = re.sub(r'\ndatabase:.*?(?=\n\S|\Z)', '', content, flags=re.DOTALL)
+new_block = f"""
+database:
+  enabled: true
+  type: "{db_type}"
+  name: "{db_name}"
+  namespace: "{env}-{comp}"
+  storage: 1Gi
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+  ha:
+    enabled: true
+    replicas: 2
+    proxy:
+      enabled: true
+      replicas: 2
+"""
+with open(path, 'w') as f:
+    f.write(content.rstrip() + new_block)
+print(f"database injecte pour {comp}: {db_type}")
+PYEOF
+}
+
+write_micro_argocd() {
+  local COMP="$1"
+  local TARGET_DIR="argocd-applications"
+  if [ "${ENV}" = "production" ]; then
+    TARGET_DIR="argocd-applications-prod"
+  fi
+  local APATH="${TARGET_DIR}/${COMP}-${ENV}.yaml"
+
+  mkdir -p "${TARGET_DIR}"
+  [ -f "${APATH}" ] && return 0
+
+  cat > "${APATH}" <<ARGOEOF
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ${COMP}-${ENV}
+  namespace: argocd
+spec:
+  project: stagiaires
+  sources:
+    - repoURL: ${TEMPLATES_URL}
+      targetRevision: main
+      path: helm-charts/app-generic
+      helm:
+        valueFiles:
+          - \$values/environments/${ENV}/${COMP}/values.yaml
+    - repoURL: ${ENVIRONMENTS_URL}
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ${ENV}-${APP_NAME}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+ARGOEOF
+  echo "ArgoCD Application creee pour ${COMP} dans ${TARGET_DIR} (namespace ${ENV}-${APP_NAME})"
+}
+
 if [ -z "${DEPLOY_MODE}" ]; then
     HAS_FRONT=false
     HAS_BACK=false
@@ -313,6 +470,21 @@ case "${DEPLOY_MODE}" in
     write_db_values "${APP_NAME}-back"
     COMMIT_MSG="[${APP_NAME}] deploy front+back -> ${SHA} (env: ${ENV}, db: ${DB_TYPE})"
     ;;
+  micro)
+    if [ -z "${SERVICES}" ]; then
+      echo "ERREUR: DEPLOY_MODE=micro nécessite la variable SERVICES (liste de chemins séparés par des espaces)"
+      exit 1
+    fi
+    COMMIT_MSG="[${APP_NAME}] deploy microservices -> ${SHA} (env: ${ENV})"
+    for SERVICE_PATH in ${SERVICES}; do
+      SERVICE_NAME=$(basename "${SERVICE_PATH}")
+      COMP="${APP_NAME}-${SERVICE_NAME}"
+      SVC_DB_TYPE=$(detect_db_type "${SERVICE_PATH}")
+      write_micro_values "${COMP}" "${REGISTRY}/${COMP}" "${SHA}"
+      write_micro_argocd "${COMP}"
+      write_micro_db_values "${COMP}" "${SVC_DB_TYPE}"
+    done
+    ;;
   *)
     echo "DEPLOY_MODE inconnu : ${DEPLOY_MODE}"
     exit 1
@@ -347,7 +519,6 @@ if [ -n "${GITHUB_STEP_SUMMARY}" ]; then
     echo "| Registre | ${REGISTRY} |"
     echo "| Mode | ${DEPLOY_MODE} |"
     echo "| DB | ${DB_TYPE:-none} |"
-    echo "| Persistance | ${PERSIST_ENABLED} |"
     echo "| Commit | ${COMMIT_MSG} |"
   } >> "$GITHUB_STEP_SUMMARY"
 fi
