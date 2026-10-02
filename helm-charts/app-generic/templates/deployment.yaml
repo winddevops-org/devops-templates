@@ -40,9 +40,11 @@ spec:
               echo "DB prete !"
         {{- end }}
         {{- if .Values.persistence.enabled }}
-        # --- AJOUT : cree le fichier vide sur le volume AVANT le subPath du conteneur principal.
-        # Sans ca, Kubernetes cree un DOSSIER a la place du fichier au premier demarrage
-        # (comportement connu de subPath sur un chemin absent), ce qui fait planter SQLite.
+        # --- Cree le fichier vide sur le volume AVANT le montage du conteneur principal.
+        # Sans ca, avec un subPath, Kubernetes cree un DOSSIER a la place du fichier
+        # au premier demarrage, ce qui fait planter SQLite.
+        # Si persistence.mountWholeDir est true, le dossier est aussi rendu inscriptible
+        # (SQLite a besoin de creer son fichier -journal a cote de la base).
         - name: init-persistent-file
           image: busybox:1.36
           command:
@@ -51,12 +53,12 @@ spec:
             - |
               if [ ! -f "/data/{{ .Values.persistence.fileName }}" ]; then
                 touch "/data/{{ .Values.persistence.fileName }}"
-                chmod 666 "/data/{{ .Values.persistence.fileName }}"
-                echo "Fichier {{ .Values.persistence.fileName }} cree et droits accordes"
-              else
-                chmod 666 "/data/{{ .Values.persistence.fileName }}"
-                echo "Fichier {{ .Values.persistence.fileName }} deja present, droits verifies"
+                echo "Fichier {{ .Values.persistence.fileName }} cree"
               fi
+              chmod 666 "/data/{{ .Values.persistence.fileName }}"
+              {{- if .Values.persistence.mountWholeDir }}
+              chmod 777 /data
+              {{- end }}
           volumeMounts:
             - name: persistent-data
               mountPath: /data
@@ -78,8 +80,12 @@ spec:
           {{- if .Values.persistence.enabled }}
           volumeMounts:
             - name: persistent-data
+              {{- if .Values.persistence.mountWholeDir }}
+              mountPath: {{ .Values.persistence.mountDir | quote }}
+              {{- else }}
               mountPath: "{{ .Values.persistence.mountDir }}/{{ .Values.persistence.fileName }}"
               subPath: "{{ .Values.persistence.fileName }}"
+              {{- end }}
           {{- end }}
       {{- if .Values.persistence.enabled }}
       volumes:
