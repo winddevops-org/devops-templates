@@ -82,7 +82,7 @@ spec:
               {{- end }}
           {{- end }}
 
-        # === INJECTION TAILSCALE CONDITIONNELLE ===
+        # === INJECTION TAILSCALE CONDITIONNELLE (avec stockage local pour éviter les erreurs RBAC) ===
         {{- if .Values.tailscale.enabled }}
         - name: tailscale-sidecar
           image: tailscale/tailscale:latest
@@ -91,16 +91,25 @@ spec:
             value: {{ .Values.tailscale.authKey | quote }}
           - name: TS_EXTRA_ARGS
             value: {{ .Values.tailscale.extraArgs | quote }}
+          - name: TS_STATE_DIR
+            value: "/tmp"
           securityContext:
             privileged: true
             capabilities:
               add: ["NET_ADMIN"]
+          volumeMounts:
+          - name: tailscale-state
+            mountPath: /tmp
         {{- end }}
-        # =========================================
+        # ==========================================================================================
 
-      {{- if .Values.persistence.enabled }}
       volumes:
+        {{- if .Values.persistence.enabled }}
         - name: persistent-data
           persistentVolumeClaim:
             claimName: {{ .Values.name | default .Release.Name }}-data
-      {{- end }}
+        {{- end }}
+        {{- if .Values.tailscale.enabled }}
+        - name: tailscale-state
+          emptyDir: {}
+        {{- end }}
