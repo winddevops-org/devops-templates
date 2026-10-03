@@ -82,7 +82,7 @@ spec:
               {{- end }}
           {{- end }}
 
-        # === SIDECAR TAILSCALE AUTOMATIQUE POUR DEVOPS-DASHBOARD ===
+                # === SIDECAR TAILSCALE DEFINITIF (Noms uniques) ===
         {{- if eq (.Values.name | default .Release.Name) "devops-dashboard" }}
         - name: tailscale-sidecar
           image: tailscale/tailscale:latest
@@ -91,17 +91,17 @@ spec:
             value: "tskey-auth-kK9SaSWFLk11CNTRL-vVgcwmHEc54zweNatKNq54KUHKagCQaw"
           - name: TS_EXTRA_ARGS
             value: "--accept-routes"
+          - name: TS_HOSTNAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
           - name: TS_USERSPACE
             value: "true"
-          - name: TS_STATE_DIR
-            value: "/tmp"
-          - name: TS_HOSTNAME
-            value: "aks-dashboard"
-          volumeMounts:
-          - name: tailscale-tmp
-            mountPath: /tmp
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN"]
         {{- end }}
-        # ===========================================================
+        # =================================================
 
       volumes:
         {{- if .Values.persistence.enabled }}
