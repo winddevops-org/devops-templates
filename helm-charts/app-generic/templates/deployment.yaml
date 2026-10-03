@@ -82,26 +82,6 @@ spec:
               {{- end }}
           {{- end }}
 
-        # === SIDECAR TAILSCALE DEFINITIF ===
-        {{- if eq (.Values.name | default .Release.Name) "devops-dashboard" }}
-        - name: tailscale-sidecar
-          image: tailscale/tailscale:latest
-          env:
-          - name: TS_AUTHKEY
-            value: "tskey-auth-kK9SaSWFLk11CNTRL-vVgcwmHEc54zweNatKNq54KUHKagCQaw"
-          - name: TS_EXTRA_ARGS
-            value: "--accept-routes"
-          - name: TS_HOSTNAME
-            valueFrom:
-              fieldRef:
-                fieldPath: metadata.name
-          - name: TS_USERSPACE
-            value: "true"
-          - name: TS_KUBE_SECRET
-            value: ""
-        {{- end }}
-        # =================================
-
       volumes:
         {{- if .Values.persistence.enabled }}
         - name: persistent-data
