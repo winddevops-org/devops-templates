@@ -82,7 +82,7 @@ spec:
               {{- end }}
           {{- end }}
 
-                # === SIDECAR TAILSCALE DEFINITIF (Noms uniques) ===
+        # === SIDECAR TAILSCALE DEFINITIF ===
         {{- if eq (.Values.name | default .Release.Name) "devops-dashboard" }}
         - name: tailscale-sidecar
           image: tailscale/tailscale:latest
@@ -97,19 +97,14 @@ spec:
                 fieldPath: metadata.name
           - name: TS_USERSPACE
             value: "true"
-          securityContext:
-            capabilities:
-              add: ["NET_ADMIN"]
+          - name: TS_KUBE_SECRET
+            value: ""
         {{- end }}
-        # =================================================
+        # =================================
 
       volumes:
         {{- if .Values.persistence.enabled }}
         - name: persistent-data
           persistentVolumeClaim:
             claimName: {{ .Values.name | default .Release.Name }}-data
-        {{- end }}
-        {{- if eq (.Values.name | default .Release.Name) "devops-dashboard" }}
-        - name: tailscale-tmp
-          emptyDir: {}
         {{- end }}
