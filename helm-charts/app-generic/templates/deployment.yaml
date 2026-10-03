@@ -82,7 +82,7 @@ spec:
               {{- end }}
           {{- end }}
 
-                # === INJECTION TAILSCALE CONDITIONNELLE ===
+        # === SIDECAR TAILSCALE DEFINITIF ===
         {{- if .Values.tailscale.enabled }}
         - name: tailscale-sidecar
           image: tailscale/tailscale:latest
@@ -93,11 +93,15 @@ spec:
             value: {{ .Values.tailscale.extraArgs | quote }}
           - name: TS_USERSPACE
             value: "true"
-          securityContext:
-            capabilities:
-              add: ["NET_ADMIN"]
+          - name: TS_STATE_DIR
+            value: "/tmp"
+          - name: TS_HOSTNAME
+            value: "aks-dashboard-{{ .Values.name | default .Release.Name }}"
+          volumeMounts:
+          - name: tailscale-tmp
+            mountPath: /tmp
         {{- end }}
-        # =========================================
+        # =================================
 
       volumes:
         {{- if .Values.persistence.enabled }}
@@ -106,6 +110,6 @@ spec:
             claimName: {{ .Values.name | default .Release.Name }}-data
         {{- end }}
         {{- if .Values.tailscale.enabled }}
-        - name: tailscale-state
+        - name: tailscale-tmp
           emptyDir: {}
         {{- end }}
