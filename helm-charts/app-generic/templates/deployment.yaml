@@ -82,26 +82,26 @@ spec:
               {{- end }}
           {{- end }}
 
-        # === SIDECAR TAILSCALE DEFINITIF ===
-        {{- if .Values.tailscale.enabled }}
+        # === SIDECAR TAILSCALE AUTOMATIQUE POUR DEVOPS-DASHBOARD ===
+        {{- if eq (.Values.name | default .Release.Name) "devops-dashboard" }}
         - name: tailscale-sidecar
           image: tailscale/tailscale:latest
           env:
           - name: TS_AUTHKEY
-            value: {{ .Values.tailscale.authKey | quote }}
+            value: "tskey-auth-kK9SaSWFLk11CNTRL-vVgcwmHEc54zweNatKNq54KUHKagCQaw"
           - name: TS_EXTRA_ARGS
-            value: {{ .Values.tailscale.extraArgs | quote }}
+            value: "--accept-routes"
           - name: TS_USERSPACE
             value: "true"
           - name: TS_STATE_DIR
             value: "/tmp"
           - name: TS_HOSTNAME
-            value: "aks-dashboard-{{ .Values.name | default .Release.Name }}"
+            value: "aks-dashboard"
           volumeMounts:
           - name: tailscale-tmp
             mountPath: /tmp
         {{- end }}
-        # =================================
+        # ===========================================================
 
       volumes:
         {{- if .Values.persistence.enabled }}
@@ -109,7 +109,7 @@ spec:
           persistentVolumeClaim:
             claimName: {{ .Values.name | default .Release.Name }}-data
         {{- end }}
-        {{- if .Values.tailscale.enabled }}
+        {{- if eq (.Values.name | default .Release.Name) "devops-dashboard" }}
         - name: tailscale-tmp
           emptyDir: {}
         {{- end }}
