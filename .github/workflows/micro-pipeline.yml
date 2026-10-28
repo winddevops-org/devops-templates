@@ -27,6 +27,8 @@ env:
 jobs:
   discover:
     runs-on: ${{ inputs.environment == 'production' && 'ubuntu-latest' || 'self-hosted' }}
+    # AJOUT : approbation GitHub Environments au demarrage (comme mono-pipeline)
+    environment: ${{ inputs.environment }}
     outputs:
       services: ${{ steps.scan.outputs.services }}
       app_name: ${{ steps.scan.outputs.app_name }}
@@ -356,8 +358,6 @@ jobs:
   gitops:
     needs: [discover, build-service]
     runs-on: ${{ inputs.environment == 'production' && 'ubuntu-latest' || 'self-hosted' }}
-    # AJOUT : approbation GitHub Environments avant le deploiement GitOps
-    environment: ${{ inputs.environment }}
     if: success()
     concurrency:
       group: gitops-environments-push
