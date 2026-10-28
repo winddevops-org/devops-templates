@@ -22,9 +22,11 @@ env:
   NEXUS_CERT_PATH: /home/ubuntu/nexus/certs/nexus.crt
   NEXUS_USER: admin
   NEXUS_PASSWORD: nexus111
+  # AJOUT : prefixe des images de build (Nexus en non-prod, Docker Hub en production)
+  IMAGE_PREFIX: ${{ inputs.environment == 'production' && '' || '192.168.1.239:8085/selfkhaoula/' }}
 jobs:
   discover:
-    runs-on: self-hosted
+    runs-on: ${{ inputs.environment == 'production' && 'ubuntu-latest' || 'self-hosted' }}
     outputs:
       services: ${{ steps.scan.outputs.services }}
       app_name: ${{ steps.scan.outputs.app_name }}
@@ -68,7 +70,7 @@ jobs:
           echo "services=${SERVICES}" >> "$GITHUB_OUTPUT"
   build-service:
     needs: discover
-    runs-on: self-hosted
+    runs-on: ${{ inputs.environment == 'production' && 'ubuntu-latest' || 'self-hosted' }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -216,7 +218,7 @@ jobs:
             -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
             -v "${MAVEN_CACHE_DIR}:/root/.m2" \
             -w /app \
-            192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
+            ${{ env.IMAGE_PREFIX }}maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
             mvn test -B \
               -Dspring.profiles.active=test,native \
               -Djwt.secret=ci-secret-key-for-testing-purposes-only-1234567890 \
@@ -229,7 +231,7 @@ jobs:
             -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
             -v "${MAVEN_CACHE_DIR}:/root/.m2" \
             -w /app \
-            192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
+            ${{ env.IMAGE_PREFIX }}maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
             mvn package -B -DskipTests \
               -Dspring.profiles.active=prod \
               -Dspring.cloud.config.enabled=false \
@@ -242,7 +244,7 @@ jobs:
           docker run --rm --network host \
             -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
             -w /app \
-            192.168.1.239:8085/selfkhaoula/python:3.11-slim \
+            ${{ env.IMAGE_PREFIX }}python:3.11-slim \
             sh -c "pip install -r requirements.txt -q && pytest --tb=short"
       - name: Run Go tests
         if: env.HAS_GO == 'true' && env.SKIP_BUILD != 'true'
@@ -251,7 +253,7 @@ jobs:
           docker run --rm --network host \
             -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
             -w /app \
-            192.168.1.239:8085/selfkhaoula/golang:1.22-alpine \
+            ${{ env.IMAGE_PREFIX }}golang:1.22-alpine \
             go test ./... -v
       - name: Run Angular tests
         if: env.HAS_ANGULAR == 'true' && env.SKIP_BUILD != 'true'
@@ -260,7 +262,7 @@ jobs:
           docker run --rm \
             -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
             -w /app \
-            192.168.1.239:8085/selfkhaoula/node:20-browsers \
+            ${{ inputs.environment == 'production' && 'node:20' || '192.168.1.239:8085/selfkhaoula/node:20-browsers' }} \
             sh -c "npm ci && npx ng test --watch=false --browsers=ChromeHeadlessNoSandbox"
       - name: Build Angular Application
         if: env.HAS_ANGULAR == 'true' && env.SKIP_BUILD != 'true'
@@ -268,7 +270,7 @@ jobs:
           docker run --rm \
             -v "${{ github.workspace }}/${{ env.SERVICE_PATH }}:/app" \
             -w /app \
-            192.168.1.239:8085/selfkhaoula/node:20-browsers \
+            ${{ inputs.environment == 'production' && 'node:20' || '192.168.1.239:8085/selfkhaoula/node:20-browsers' }} \
             sh -c "
               npm ci --legacy-peer-deps && \
               if ! npm ls @angular/animations >/dev/null 2>&1; then
@@ -353,7 +355,9 @@ jobs:
           docker rm -f smoke-${{ env.SERVICE }} 2>/dev/null || true
   gitops:
     needs: [discover, build-service]
-    runs-on: self-hosted
+    runs-on: ${{ inputs.environment == 'production' && 'ubuntu-latest' || 'self-hosted' }}
+    # AJOUT : approbation GitHub Environments avant le deploiement GitOps
+    environment: ${{ inputs.environment }}
     if: success()
     concurrency:
       group: gitops-environments-push
