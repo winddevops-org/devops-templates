@@ -20,7 +20,7 @@ on:
 jobs:
   pipeline:
     runs-on: ${{ inputs.environment == 'production' && 'ubuntu-latest' || 'self-hosted' }}
-    environment: ${{ inputs.environment }}
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || '' }}
     timeout-minutes: 60
     services:
       postgres:
@@ -135,10 +135,11 @@ jobs:
 
       - name: Verifier si l'image existe deja
         id: check_image
+        if: github.event_name == 'workflow_dispatch'
         run: |
           REGISTRY="${{ inputs.environment == 'production' && vars.ACR_LOGIN_SERVER || '192.168.1.239:8085/selfkhaoula' }}"
           SKIP="false"
-          
+
           if [ "${DEPLOY_MODE}" = "dual" ]; then
             IMG_F="${REGISTRY}/${APP_NAME}-front:${{ github.sha }}"
             IMG_B="${REGISTRY}/${APP_NAME}-back:${{ github.sha }}"
@@ -227,7 +228,7 @@ jobs:
           echo "BACK_LOCAL_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
 
       - name: Trivy scan
-        if: env.SKIP_BUILD != 'true'
+        if: github.event_name == 'workflow_dispatch' && env.SKIP_BUILD != 'true'
         continue-on-error: true
         run: |
           if [ "${DEPLOY_MODE}" = "dual" ]; then
@@ -238,7 +239,7 @@ jobs:
           fi
 
       - name: Smoke tests
-        if: env.SKIP_BUILD != 'true'
+        if: github.event_name == 'workflow_dispatch' && env.SKIP_BUILD != 'true'
         run: |
           if [ "${DEPLOY_MODE}" = "dual" ]; then
             IMAGES=("${FRONT_LOCAL_IMAGE}" "${BACK_LOCAL_IMAGE}")
@@ -259,7 +260,7 @@ jobs:
           done
 
       - name: Push images
-        if: env.SKIP_BUILD != 'true'
+        if: github.event_name == 'workflow_dispatch' && env.SKIP_BUILD != 'true'
         run: |
           if [ "${DEPLOY_MODE}" = "dual" ]; then
             docker push "${FRONT_LOCAL_IMAGE}"
@@ -269,6 +270,7 @@ jobs:
           fi
 
       - name: Update GitOps
+        if: github.event_name == 'workflow_dispatch'
         env:
           GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
           APP_NAME: ${{ env.APP_NAME }}
