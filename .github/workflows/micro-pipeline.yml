@@ -28,7 +28,7 @@ jobs:
   discover:
     runs-on: ${{ inputs.environment == 'production' && 'ubuntu-latest' || 'self-hosted' }}
     # AJOUT : approbation GitHub Environments au demarrage (comme mono-pipeline)
-    environment: ${{ inputs.environment }}
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || '' }}
     outputs:
       services: ${{ steps.scan.outputs.services }}
       app_name: ${{ steps.scan.outputs.app_name }}
@@ -114,6 +114,7 @@ jobs:
           fi
       - name: Check if image exists
         id: check_image
+        if: github.event_name == 'workflow_dispatch'
         run: |
           SKIP="false"
           if docker manifest inspect "${{ env.IMAGE }}" >/dev/null 2>&1; then
@@ -313,12 +314,12 @@ jobs:
             -t "${{ env.IMAGE }}" \
             "${{ env.SERVICE_PATH }}"
       - name: Security scan
-        if: env.SKIP_BUILD != 'true'
+        if: github.event_name == 'workflow_dispatch' && env.SKIP_BUILD != 'true'
         continue-on-error: true
         run: |
           trivy image --severity HIGH,CRITICAL --exit-code 0 "${{ env.IMAGE }}"
       - name: Smoke test
-        if: env.SKIP_BUILD != 'true'
+        if: github.event_name == 'workflow_dispatch' && env.SKIP_BUILD != 'true'
         run: |
           CONTAINER_ID=$(docker run -d --name smoke-${{ env.SERVICE }} \
             -e SPRING_PROFILES_ACTIVE=prod \
@@ -348,7 +349,7 @@ jobs:
           docker logs "${CONTAINER_ID}"
           exit 1
       - name: Push image
-        if: env.SKIP_BUILD != 'true'
+        if: github.event_name == 'workflow_dispatch' && env.SKIP_BUILD != 'true'
         run: docker push "${{ env.IMAGE }}"
       - name: Cleanup
         if: always()
@@ -358,7 +359,7 @@ jobs:
   gitops:
     needs: [discover, build-service]
     runs-on: ${{ inputs.environment == 'production' && 'ubuntu-latest' || 'self-hosted' }}
-    if: success()
+    if: success() && github.event_name == 'workflow_dispatch'
     concurrency:
       group: gitops-environments-push
       cancel-in-progress: false
